@@ -6,7 +6,7 @@
 #include <math.h>
 #include "timers.h"
 
-#define NDIM		1024
+#define NDIM		2048
 #define MIN(x,y)	((x < y) ? (x) : (y))
 
 float a[NDIM][NDIM];
