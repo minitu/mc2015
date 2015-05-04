@@ -41,4 +41,4 @@ run:
 	
 
 clean:
-	rm -f kmeans_seq kmeans_pthread kmeans_main.o kmeans_seq.o kmeans_pthread.o centroid.point data.point final_centroid.point result.class task*
+	rm -f kmeans_seq kmeans_pthread kmeans_main.o kmeans_seq.o kmeans_pthread.o centroid.point data.point final_centroid.point final_centroid_seq.point final_centroid_pthread.point result.class result_seq.class result_pthread.class task*

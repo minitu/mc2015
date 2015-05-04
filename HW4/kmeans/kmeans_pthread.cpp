@@ -7,7 +7,8 @@
 #include <pthread.h>
 #include <math.h>
 
-#define TNUM	4
+#define TNUM		4
+#define MIN(x,y)	((x < y) ? (x) : (y))
 
 /* Some global variables */
 int t_iteration_n;
@@ -44,7 +45,7 @@ void *kmeans_sub(void *t_arg)
 	for (i = 0; i < t_iteration_n; i++) {
 
 		// Assignment step
-		for (data_i = tid * t_data_cnt; data_i < t_data_n; data_i++) {
+		for (data_i = tid * t_data_cnt; data_i < MIN(tid * t_data_cnt + t_data_cnt, t_data_n); data_i++) {
 			float min_dist = DBL_MAX;
 
 			for (class_i = 0; class_i < t_class_n; class_i++) {
@@ -78,7 +79,7 @@ void *kmeans_sub(void *t_arg)
 		pthread_barrier_wait(&my_barrier);
 
 		// Sum up and count data for each class
-		for (data_i = tid * t_data_cnt; data_i < t_data_n; data_i++) {
+		for (data_i = tid * t_data_cnt; data_i < MIN(tid * t_data_cnt + t_data_cnt, t_data_n); data_i++) {
 			t_centroids[t_partitioned[data_i]].x += t_data[data_i].x;
 			t_centroids[t_partitioned[data_i]].y += t_data[data_i].y;
 			count[t_partitioned[data_i]]++;
