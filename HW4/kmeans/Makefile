@@ -3,7 +3,7 @@ CXX=g++
 CXXFLAGS=-Wall
 
 
-LIBS = -lrt -pthread -lm
+LIBS = -lrt
 LDFLAGS = ${LIBS}
 
 
@@ -21,13 +21,13 @@ kmeans_seq: kmeans_seq.o kmeans_main.o
 pthread: kmeans_pthread
 
 kmeans_pthread: kmeans_pthread.o kmeans_main.o
-	${CXX} $^ -o $@ ${LDFLAGS} -lpthread
+	${CXX} $^ -o $@ ${LDFLAGS} -lpthread -lm
 
 run_all:
 	./gen_data.py centroid 64 centroid.point
 	./gen_data.py data 65536 data.point 64
 	thorq --add kmeans_seq centroid.point data.point result_seq.class final_centroid_seq.point 1024
-	thorq --add kmeans_par centroid.point data.point result_par.class final_centroid_par.point 1024
+	thorq --add kmeans_pthread centroid.point data.point result_pthread.class final_centroid_pthread.point 1024
 
 run_seq:
 	./gen_data.py centroid 64 centroid.point
@@ -37,7 +37,7 @@ run_seq:
 run:
 	./gen_data.py centroid 64 centroid.point
 	./gen_data.py data 65536 data.point 64
-	thorq --add kmeans_par centroid.point data.point result_par.class final_centroid_par.point 1024
+	thorq --add kmeans_pthread centroid.point data.point result_pthread.class final_centroid_pthread.point 1024
 	
 
 clean:
