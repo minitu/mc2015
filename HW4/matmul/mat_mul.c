@@ -58,6 +58,7 @@ void mat_mul( float c[NDIM][NDIM], float a[NDIM][NDIM], float b[NDIM][NDIM] )
 	pthread_attr_init(&attr);
 	pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
 
+	/* Create and execute threads */
 	for (t = 0; t < tnum; t++) {
 		rc = pthread_create(&threads[t], &attr, mat_mul_sub, (void *) t);
 		if (rc) {

@@ -3,7 +3,7 @@ CXX=g++
 CXXFLAGS=-Wall
 
 
-LIBS = -lrt
+LIBS = -lrt -pthread -lm
 LDFLAGS = ${LIBS}
 
 
