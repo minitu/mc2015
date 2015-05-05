@@ -7,7 +7,7 @@
 #include <pthread.h>
 #include <math.h>
 
-#define TNUM		16
+#define TNUM		4
 #define MIN(x,y)	((x < y) ? (x) : (y))
 
 /* Some global variables */
