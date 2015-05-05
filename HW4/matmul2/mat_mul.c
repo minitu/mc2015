@@ -2,11 +2,9 @@
 #include <sys/time.h>
 #include <unistd.h>
 #include <stdlib.h>
-#include <pthread.h>
-#include <math.h>
 #include "timers.h"
 
-#define NDIM		2048
+#define NDIM		1024
 #define MIN(x,y)	((x < y) ? (x) : (y))
 
 float a[NDIM][NDIM];
@@ -15,19 +13,15 @@ float c[NDIM][NDIM];
 
 int print_matrix = 0;
 int validation = 0;
-
-int tnum = 1;
-int tsqr = 1;
 int bsize = 1;
 
-void mat_mul_sub(void *t)
+void mat_mul( float c[NDIM][NDIM], float a[NDIM][NDIM], float b[NDIM][NDIM] )
 {
-	int tid = (int) t;
-
 	int ii, jj, kk, i, j, k;
-
-	for (ii = ((tid - tid % tsqr) / tsqr) * bsize; ii < MIN(((tid - tid % tsqr) / tsqr) * bsize + bsize, NDIM); ii += bsize) {
-		for (jj = (tid % tsqr) * bsize; jj < MIN((tid % tsqr) * bsize + bsize, NDIM); jj += bsize) {
+	
+	// C = AB
+	for (ii = 0; ii < NDIM; ii += bsize) {
+		for (jj = 0; jj < NDIM; jj += bsize) {
 			for (kk = 0; kk < NDIM; kk += bsize) {
 				for (i = ii; i < MIN(ii + bsize, NDIM); i++) {
 					for (j = jj; j < MIN(jj + bsize, NDIM); j++) {
@@ -37,43 +31,6 @@ void mat_mul_sub(void *t)
 					}
 				}
 			}
-		}
-	}
-
-	pthread_exit((void *) t);
-}
-
-void mat_mul( float c[NDIM][NDIM], float a[NDIM][NDIM], float b[NDIM][NDIM] )
-{
-	pthread_t threads[tnum];
-	pthread_attr_t attr;
-	int t, rc;
-	void *status;
-
-	/* Calculate tsqr and bsize */
-	tsqr = (int) sqrt(tnum);
-	bsize = ceil((double)NDIM / (double)tsqr);
-
-	/* Initialize and set thread detached attribute */
-	pthread_attr_init(&attr);
-	pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
-
-	/* Create and execute threads */
-	for (t = 0; t < tnum; t++) {
-		rc = pthread_create(&threads[t], &attr, mat_mul_sub, (void *) t);
-		if (rc) {
-			printf("ERROR; return code from pthread_create() is %d\n", rc);
-			exit(-1);
-		}
-	}
-
-	/* Free attribute and wait for the other threads */
-	pthread_attr_destroy(&attr);
-	for (t = 0; t < tnum; t++) {
-		rc = pthread_join(threads[t], &status);
-		if (rc) {
-			printf("ERROR; return code from pthread_join() is %d\n", rc);
-			exit(-1);
 		}
 	}
 }
@@ -87,7 +44,7 @@ void check_mat_mul( float c[NDIM][NDIM], float a[NDIM][NDIM], float b[NDIM][NDIM
 	int validated = 1;
 
 	printf("Validating the result..\n");
-
+	
 	// C = AB
 	for( i = 0; i < NDIM; i++ )
 	{
@@ -142,30 +99,30 @@ void parse_opt(int argc, char** argv)
 {
 	int opt;
 
-	while( (opt = getopt(argc, argv, "pvhikjst:")) != -1 )
+	while( (opt = getopt(argc, argv, "pvhikjs:")) != -1 )
 	{
 		switch(opt)
 		{
-			case 'p':
-				// print matrix data.
-				print_matrix = 1;
-				break;
+		case 'p':
+			// print matrix data.
+			print_matrix = 1;
+			break;
 
-			case 'v':
-				// validation
-				validation = 1;
-				break;
+		case 'v':
+			// validation
+			validation = 1;
+			break;
 
-			case 't':
-				// set number of threads (has to be square numbers)
-				tnum = atoi(optarg);
-				break;
+		case 's':
+			// block size
+			bsize = atoi(optarg);
+			break;
 
-			case 'h':
-			default:
-				print_help(argv[0]);
-				exit(0);
-				break;
+		case 'h':
+		default:
+			print_help(argv[0]);
+			exit(0);
+			break;
 		}
 	}
 }
