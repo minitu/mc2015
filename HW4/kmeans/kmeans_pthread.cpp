@@ -7,12 +7,13 @@
 #include <pthread.h>
 #include <math.h>
 
-#define TNUM		1
+#define TNUM		16
 #define MIN(x,y)	((x < y) ? (x) : (y))
 
 /* Some global variables */
 int t_iteration_n;
 int t_class_n;
+int t_class_cnt;
 int t_data_n;
 int t_data_cnt;
 Point* t_centroids;
@@ -66,14 +67,11 @@ void *kmeans_sub(void *t_arg)
 		pthread_barrier_wait(&my_barrier);
 
 		// Update step
-		// Clear sum buffer and class count (only for thread 0)
-		// We can paralellize here too, but little effect if # of classes is small...
-		if (tid == 0) {
-			for (class_i = 0; class_i < t_class_n; class_i++) {
-				t_centroids[class_i].x = 0.0;
-				t_centroids[class_i].y = 0.0;
-				count[class_i] = 0;
-			}
+		// Clear sum buffer and class count
+		for (class_i = tid * t_class_cnt; class_i < MIN(tid * t_class_cnt + t_class_cnt, t_class_n); class_i++) {
+			t_centroids[class_i].x = 0.0;
+			t_centroids[class_i].y = 0.0;
+			count[class_i] = 0;
 		}
 
 		// Synchronize
@@ -92,12 +90,9 @@ void *kmeans_sub(void *t_arg)
 		pthread_barrier_wait(&my_barrier);
 
 		// Divide the sum with the number of classes for mean point
-		// Can also paralellize here but didn't for the same reason...
-		if (tid == 0) {
-			for (class_i = 0; class_i < t_class_n; class_i++) {
-				t_centroids[class_i].x /= count[class_i];
-				t_centroids[class_i].y /= count[class_i];
-			}
+		for (class_i = tid * t_class_cnt; class_i < MIN(tid * t_class_cnt + t_class_cnt, t_class_n); class_i++) {
+			t_centroids[class_i].x /= count[class_i];
+			t_centroids[class_i].y /= count[class_i];
 		}
 		
 		// All threads must reach here before next iteration
@@ -123,9 +118,10 @@ void kmeans(int iteration_n, int class_n, int data_n, Point* centroids, Point* d
 	int i, t, rc;
 	void *status;
 
-	/* Set number of data that each thread is responsible for */
+	/* Set number of data & classes that each thread is responsible for */
 	t_data_cnt = ceil((double)t_data_n / (double)TNUM);
-	
+	t_class_cnt = ceil((double)t_class_n / (double)TNUM);
+
 	/* Malloc count & locks & mutex */
 	count = (int*) malloc(sizeof(int) * class_n);
 	mutex = (pthread_mutex_t*) malloc(sizeof(pthread_mutex_t) * class_n);
