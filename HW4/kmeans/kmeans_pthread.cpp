@@ -7,7 +7,7 @@
 #include <pthread.h>
 #include <math.h>
 
-#define TNUM		4
+#define TNUM		1
 #define MIN(x,y)	((x < y) ? (x) : (y))
 
 /* Some global variables */
@@ -20,8 +20,9 @@ Point* t_data;
 int* t_partitioned;
 int* count;
 
-/* Pthread barrier */
+/* Pthread barrier & mutex */
 pthread_barrier_t my_barrier;
+pthread_mutex_t* mutex;
 
 /* Thread data structure */
 struct thread_data {
@@ -78,11 +79,13 @@ void *kmeans_sub(void *t_arg)
 		// Synchronize
 		pthread_barrier_wait(&my_barrier);
 
-		// Sum up and count data for each class
+		// Sum up and count data for each class (use mutex here)
 		for (data_i = tid * t_data_cnt; data_i < MIN(tid * t_data_cnt + t_data_cnt, t_data_n); data_i++) {
+			pthread_mutex_lock(&mutex[t_partitioned[data_i]]); // Lock
 			t_centroids[t_partitioned[data_i]].x += t_data[data_i].x;
 			t_centroids[t_partitioned[data_i]].y += t_data[data_i].y;
 			count[t_partitioned[data_i]]++;
+			pthread_mutex_unlock(&mutex[t_partitioned[data_i]]); // Unlock
 		}
 
 		// Synchronize
@@ -117,14 +120,20 @@ void kmeans(int iteration_n, int class_n, int data_n, Point* centroids, Point* d
 	/* Thread related declarations */
 	pthread_t threads[TNUM];
 	pthread_attr_t attr;
-	int t, rc;
+	int i, t, rc;
 	void *status;
 
 	/* Set number of data that each thread is responsible for */
 	t_data_cnt = ceil((double)t_data_n / (double)TNUM);
 	
-	/* Malloc count */
-	count = (int*) malloc(sizeof(int) *class_n);
+	/* Malloc count & locks & mutex */
+	count = (int*) malloc(sizeof(int) * class_n);
+	mutex = (pthread_mutex_t*) malloc(sizeof(pthread_mutex_t) * class_n);
+
+	/* Initialize mutex */
+	for (i = 0; i < class_n; i++) {
+		pthread_mutex_init(&mutex[i], NULL);
+	}
 
 	/* Initialize and set thread detached attribute */
 	pthread_attr_init(&attr);
@@ -155,4 +164,10 @@ void kmeans(int iteration_n, int class_n, int data_n, Point* centroids, Point* d
 
 	/* Destroy barrier */
 	pthread_barrier_destroy(&my_barrier);
+
+	/* Destroy mutex */
+	for (i = 0; i < class_n; i++) {
+		pthread_mutex_destroy(&mutex[i]);
+	}
+
 }
