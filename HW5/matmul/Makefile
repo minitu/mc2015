@@ -3,7 +3,7 @@ OBJS=mat_mul.o timers.o
 
 CC=gcc
 CFLAGS=-g -O2 -Wall
-LDFLAGS=IOpenCL
+LDFLAGS=-lOpenCL
 
 all: $(TARGET)
 
@@ -14,4 +14,4 @@ clean:
 	rm -rf $(TARGET) $(OBJS) task*
 
 run: $(TARGET)
-	thorq --add ./$(TARGET) -v
+	thorq --add --mode single --device gpu --timeout 100 ./$(TARGET)
