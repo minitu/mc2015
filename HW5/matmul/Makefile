@@ -3,7 +3,7 @@ OBJS=mat_mul.o timers.o
 
 CC=gcc
 CFLAGS=-g -O2 -Wall
-LDFLAGS=-lOpenCL
+LDFLAGS=-lOpenCL -lm
 
 all: $(TARGET)
 

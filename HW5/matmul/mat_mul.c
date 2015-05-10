@@ -4,11 +4,14 @@
 #include <stdlib.h>
 #include <CL/opencl.h>
 #include <stdbool.h>
+#include <math.h>
 #include "timers.h"
 
-#define NDIM				100000
-#define MAX_SOURCE_SIZE		0x100000
 #define USE_GPU				0
+
+#define MAX_SOURCE_SIZE		0x100000
+
+#define NDIM				100000
 #define LOCAL_WORK_SIZE		16
 #define GLOBAL_WORK_SIZE	1024
 
@@ -31,8 +34,6 @@ void mat_mul( float c[NDIM][NDIM], float a[NDIM][NDIM], float b[NDIM][NDIM] )
 		}
 	}
 }
-
-/************************** DO NOT TOUCH BELOW HERE ******************************/
 
 void check_mat_mul( float c[NDIM][NDIM], float a[NDIM][NDIM], float b[NDIM][NDIM] )
 {
@@ -144,15 +145,6 @@ int main(int argc, char** argv)
 
 	timer_start(1); // DEBUG
 
-	/* Intialize matrices - need to paralellize */
-	/*
-	for (i = 0; i < m_size; i++) {
-		h_A[i] = k;
-		h_B[i] = k;
-		k++;
-	}
-	*/
-
 	/* Gather platform data */
 	cl_uint dev_cnt = 0;
 	clGetPlatformIDs(0, 0, &dev_cnt);
@@ -253,7 +245,7 @@ int main(int argc, char** argv)
 		d_B = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, m_size, h_B, &err);;
 		d_C = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, m_size, h_C, &err);
 		if (!d_A || !d_B || !d_C) {
-			printf("Error: Failed to allocate device memory\n");
+			printf("Error: Failed to allocate device memory.\n");
 			exit(1);
 		}
 	}
@@ -262,26 +254,67 @@ int main(int argc, char** argv)
 		d_B = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, m_size, h_B, &err);;
 		d_C = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, m_size, h_C, &err);
 		if (!d_A || !d_B || !d_C) {
-			printf("Error: Failed to allocate device memory\n");
+			printf("Error: Failed to allocate device memory.\n");
 			exit(1);
 		}
 	}
 
-	/* Set kernel arguments and launch */
+	/* Set kernel arguments and launch init */
 	size_t localWorkSize[2], globalWorkSize[2];
 	int i;
+	int ndim = NDIM;
+	int sdim = ceil((double)NDIM / (double)GLOBAL_WORK_SIZE);
+	float startNum = 0.0f;
 
 	for (i = 0; i < 2; i++) {
 		localWorkSize[i] = LOCAL_WORK_SIZE;
 		globalWorkSize[i] = GLOBAL_WORK_SIZE;
 	}
 
-	//timer_start(1);
-	//mat_mul( c, a, b );
-	timer_stop(1);
+	if (!USE_GPU) { // CPU
+		err = clSetKernelArg(init, 0, sizeof(cl_mem), (void *)&d_A);
+		err |= clSetKernelArg(init, 1, sizeof(cl_mem), (void *)&d_B);
+		err |= clSetKernelArg(init, 2, sizeof(int), (void *)&ndim);
+		err |= clSetKernelArg(init, 3, sizeof(int), (void *)&sdim);
+		err |= clSetKernelArg(init, 4, sizeof(float), (void *)&startNum);
+	}
+	else { // GPU
+		// Do something
+	}
+
+	if (err != CL_SUCCESS) {
+		printf("Error: Failed to set kernel arguments. %d\n", err);
+		exit(1);
+	}
+
+	err = clEnqueueNDRangeKernel(commands, init, 2, NULL, globalWorkSize, localWorkSize, 0, NULL, NULL);
+
+	if (err != CL_SUCCESS) {
+		printf("Error: Failed to execute kernel. %d\n", err);
+		exit(1);
+	}
+
+	/* Retrieve result from device */
+	err = clEnqueueReadBuffer(commands, d_A, CL_TRUE, 0, m_size, h_A, 0, NULL, NULL);
+
+	if (err != CL_SUCCESS) {
+		printf("Error: Failed to read output array. %d\n", err);
+		exit(1);
+	}
+
+	timer_stop(1); // DEBUG
 
 	printf("Time elapsed : %lf sec\n", timer_read(1));
 
+	// DEBUG
+	/*
+	for (i = 0; i < m_size; i++) {
+		if (i % NDIM == 0)
+			printf("\n");
+		printf("%8.2lf ", h_A[i]);
+	}
+	printf("\n");
+	*/
 	/*
 	if( validation )
 		check_mat_mul( c, a, b );
