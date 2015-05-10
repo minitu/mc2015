@@ -8,10 +8,9 @@
 
 #define NDIM				100000
 #define MAX_SOURCE_SIZE		0x100000
-
-//float a[NDIM][NDIM];
-//float b[NDIM][NDIM];
-//float c[NDIM][NDIM];
+#define USE_GPU				0
+#define LOCAL_WORK_SIZE		16
+#define GLOBAL_WORK_SIZE	1024
 
 int print_matrix = 0;
 int validation = 0;
@@ -122,8 +121,6 @@ void parse_opt(int argc, char** argv)
 
 int main(int argc, char** argv)
 {
-	int i, j, k = 1;
-
 	parse_opt( argc, argv );
 
 	/* OpenCL variables */
@@ -132,8 +129,8 @@ int main(int argc, char** argv)
 	cl_device_id device_id;
 	cl_context context;
 	cl_command_queue commands;
-	cl_program program;
-	cl_kernel kernel;
+	cl_program init_program, compute_program;
+	cl_kernel init, compute;
 
 	cl_mem d_A;
 	cl_mem d_B;
@@ -164,8 +161,7 @@ int main(int argc, char** argv)
 	clGetPlatformIDs(dev_cnt, platform_ids, NULL);
 
 	/* Connect to a compute device */
-	int gpu = 1;
-	err = clGetDeviceIDs(platform_ids[0], gpu ? CL_DEVICE_TYPE_GPU : CL_DEVICE_TYPE_CPU, 1, &device_id, NULL);
+	err = clGetDeviceIDs(platform_ids[0], USE_GPU ? CL_DEVICE_TYPE_GPU : CL_DEVICE_TYPE_CPU, 1, &device_id, NULL);
 	if (err != CL_SUCCESS) {
 		printf("Error: Failed to create a device group.\n");
 		return EXIT_FAILURE;
@@ -185,45 +181,101 @@ int main(int argc, char** argv)
 		return EXIT_FAILURE;
 	}
 
-	/* Create the compute program from source file */
-	FILE *fp;
-	char fileName[] = "./mat_mul_kernel.cl";
-	char *src_str;
-	size_t src_size;
+	/* Create init & compute program from source files */
+	FILE *fp1, *fp2;
+	char initFileName[] = "./mat_mul_init.cl";
+	char computeFileName[] = "./mat_mul_compute.cl";
+	char *src_str1, *src_str2;
+	size_t src_size1, src_size2;
 
-	fp = fopen(fileName, "r");
-	if (!fp) {
+	fp1 = fopen(initFileName, "r");
+	fp2 = fopen(computeFileName, "r");
+	if (!fp1 || !fp2) {
 		perror("File read failed");
 		return 1;
 	}
-	src_str = (char*) malloc(MAX_SOURCE_SIZE);
-	src_size = fread(src_str, 1, MAX_SOURCE_SIZE, fp);
-	fclose(fp);
+	src_str1 = (char*) malloc(MAX_SOURCE_SIZE);
+	src_str2 = (char*) malloc(MAX_SOURCE_SIZE);
+	src_size1 = fread(src_str1, 1, MAX_SOURCE_SIZE, fp1);
+	src_size2 = fread(src_str2, 1, MAX_SOURCE_SIZE, fp2);
 
-	program = clCreateProgramWithSource(context, 1, (const char **)&src_str, (const size_t *)&src_size, &err);
-	if (!program) {
+	init_program = clCreateProgramWithSource(context, 1, (const char **)&src_str1, (const size_t *)&src_size1, &err);
+	if (!init_program) {
 		printf("Error: Failed to create compute program.\n");
 		return EXIT_FAILURE;
 	}
 
+	compute_program = clCreateProgramWithSource(context, 1, (const char **)&src_str2, (const size_t *)&src_size2, &err);
+	if (!compute_program) {
+		printf("Error: Failed to create compute program.\n");
+		return EXIT_FAILURE;
+	}
+
+	fclose(fp1);
+	fclose(fp2);
+
 	/* Build the program executable */
-	err = clBuildProgram(program, 0, NULL, NULL, NULL, NULL);
+	err = clBuildProgram(init_program, 0, NULL, NULL, NULL, NULL);
 	if (err != CL_SUCCESS) {
 		size_t len;
 		char buffer[2048];
 		printf("Error: Failed to build program executable.\n");
-		clGetProgramBuildInfo(program, device_id, CL_PROGRAM_BUILD_LOG, sizeof(buffer), buffer, &len);
+		clGetProgramBuildInfo(init_program, device_id, CL_PROGRAM_BUILD_LOG, sizeof(buffer), buffer, &len);
+		printf("%s\n", buffer);
+		exit(1);
+	}
+
+	err = clBuildProgram(compute_program, 0, NULL, NULL, NULL, NULL);
+	if (err != CL_SUCCESS) {
+		size_t len;
+		char buffer[2048];
+		printf("Error: Failed to build program executable.\n");
+		clGetProgramBuildInfo(compute_program, device_id, CL_PROGRAM_BUILD_LOG, sizeof(buffer), buffer, &len);
 		printf("%s\n", buffer);
 		exit(1);
 	}
 
 	/* Create the compute kernel in the program */
-	kernel = clCreateKernel(program, "mat_mul_kernel", &err);
-	if (!kernel || err != CL_SUCCESS) {
+	init = clCreateKernel(init_program, "mat_mul_init", &err);
+	if (!init || err != CL_SUCCESS) {
+		printf("Error: Failed to create init kernel.\n");
+		exit(1);
+	}
+	compute = clCreateKernel(compute_program, "mat_mul_compute", &err);
+	if (!compute || err != CL_SUCCESS) {
 		printf("Error: Failed to create compute kernel.\n");
 		exit(1);
 	}
-	
+
+	/* Create buffers for matrices in device global memory */
+	if (!USE_GPU) { // If using CPU, just use the host memory
+		d_A = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, m_size, h_A, &err);
+		d_B = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, m_size, h_B, &err);;
+		d_C = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, m_size, h_C, &err);
+		if (!d_A || !d_B || !d_C) {
+			printf("Error: Failed to allocate device memory\n");
+			exit(1);
+		}
+	}
+	else { // If using GPU, matrices need to be split up to fit into 3GB
+		d_A = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, m_size, h_A, &err);
+		d_B = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, m_size, h_B, &err);;
+		d_C = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, m_size, h_C, &err);
+		if (!d_A || !d_B || !d_C) {
+			printf("Error: Failed to allocate device memory\n");
+			exit(1);
+		}
+	}
+
+	/* Set kernel arguments and launch */
+	size_t localWorkSize[2], globalWorkSize[2];
+	int i;
+
+	for (i = 0; i < 2; i++) {
+		localWorkSize[i] = LOCAL_WORK_SIZE;
+		globalWorkSize[i] = GLOBAL_WORK_SIZE;
+	}
+
 	//timer_start(1);
 	//mat_mul( c, a, b );
 	timer_stop(1);
@@ -252,8 +304,14 @@ int main(int argc, char** argv)
 	free(h_B);
 	free(h_C);
 
-	clReleaseProgram(program);
-	clReleaseKernel(kernel);
+	clReleaseMemObject(d_A);
+	clReleaseMemObject(d_B);
+	clReleaseMemObject(d_C);
+
+	clReleaseProgram(init_program);
+	clReleaseProgram(compute_program);
+	clReleaseKernel(init);
+	clReleaseKernel(compute);
 	clReleaseCommandQueue(commands);
 	clReleaseContext(context);
 

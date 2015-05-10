@@ -1,4 +1,4 @@
-__kernel void mat_mul_kernel(
+__kernel void mat_mul_compute(
 		__global float* A,
 		__global float* B,
 		__global float* C,
