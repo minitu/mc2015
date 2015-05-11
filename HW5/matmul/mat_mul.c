@@ -11,76 +11,23 @@
 
 #define MAX_SOURCE_SIZE		0x100000
 
-#define NDIM				100000
-#define LOCAL_WORK_SIZE		16
+#define NDIM				1024
 #define GLOBAL_WORK_SIZE	1024
+#define LOCAL_WORK_SIZE		1			// Should not exceed 32 on Chundoong CPU,
+										// because MAX_WORK_GROUP_SIZE = 1024 = 32 ^ 2.
 
 int print_matrix = 0;
-int validation = 0;
 
-void mat_mul( float c[NDIM][NDIM], float a[NDIM][NDIM], float b[NDIM][NDIM] )
+void print_mat( float* mat )
 {
-	int i, j, k;
-	
-	// C = AB
-	for( i = 0; i < NDIM; i++ )
-	{
-		for( j = 0; j < NDIM; j++ )
-		{
-			for( k = 0; k < NDIM; k++ )
-			{
-				c[i][j] += a[i][k] * b[k][j];
-			}
-		}
+	int i;
+
+	for (i = 0; i < NDIM * NDIM; i++) {
+		if (i != 0 && i % NDIM == 0)
+			printf("\n");
+		printf("%8.2lf ", mat[i]);
 	}
-}
-
-void check_mat_mul( float c[NDIM][NDIM], float a[NDIM][NDIM], float b[NDIM][NDIM] )
-{
-	int i, j, k;
-	float sum;
-	int validated = 1;
-
-	printf("Validating the result..\n");
-	
-	// C = AB
-	for( i = 0; i < NDIM; i++ )
-	{
-		for( j = 0; j < NDIM; j++ )
-		{
-			sum = 0;
-			for( k = 0; k < NDIM; k++ )
-			{
-				sum += a[i][k] * b[k][j];
-			}
-
-			if( c[i][j] != sum )
-			{
-				printf("c[%d][%d] is differ(value=%lf correct_value=%lf)!!\n", i, j, c[i][j], sum );
-				validated = 0;
-			}
-		}
-	}
-
-	printf("Validation : ");
-	if( validated )
-		printf("SUCCESSFUL.\n");
-	else
-		printf("FAILED.\n");
-}
-
-void print_mat( float mat[NDIM][NDIM] )
-{
-	int i, j;
-
-	for( i = 0; i < NDIM; i++ )
-	{
-		for( j = 0; j < NDIM; j++ )
-		{
-			printf("%8.2lf ", mat[i][j]);
-		}
-		printf("\n");
-	}
+	printf("\n");
 }
 
 void print_help(const char* prog_name)
@@ -89,7 +36,6 @@ void print_help(const char* prog_name)
 	printf("\n");
 	printf("OPTIONS\n");
 	printf("  -p : print matrix data.\n");
-	printf("  -v : validate matrix multiplication.\n");
 	printf("  -h : print this page.\n");
 }
 
@@ -97,18 +43,13 @@ void parse_opt(int argc, char** argv)
 {
 	int opt;
 
-	while( (opt = getopt(argc, argv, "pvhikjs:")) != -1 )
+	while( (opt = getopt(argc, argv, "ph:")) != -1 )
 	{
 		switch(opt)
 		{
 		case 'p':
 			// print matrix data.
 			print_matrix = 1;
-			break;
-
-		case 'v':
-			// validation
-			validation = 1;
 			break;
 
 		case 'h':
@@ -166,7 +107,7 @@ int main(int argc, char** argv)
 		return EXIT_FAILURE;
 	}
 
-	/* Create a command queue and attach it to the compute device */
+	/* Create an in-order command queue and attach it to the compute device */
 	commands = clCreateCommandQueue(context, device_id, 0, &err);
 	if (!commands) {
 		printf("Error: Failed to create a command queue.\n");
@@ -227,7 +168,7 @@ int main(int argc, char** argv)
 		exit(1);
 	}
 
-	/* Create the compute kernel in the program */
+	/* Create init & compute kernel */
 	init = clCreateKernel(init_program, "mat_mul_init", &err);
 	if (!init || err != CL_SUCCESS) {
 		printf("Error: Failed to create init kernel.\n");
@@ -259,12 +200,35 @@ int main(int argc, char** argv)
 		}
 	}
 
+	/* Find out maximum work group size & maximum work item sizes */
+	size_t max_work_group_size;
+	size_t max_work_item_sizes[3];
+
+	err = clGetDeviceInfo(device_id, CL_DEVICE_MAX_WORK_GROUP_SIZE, sizeof(size_t), &max_work_group_size, NULL);
+
+	if (err != CL_SUCCESS) {
+		printf("Error: Failed to get CL_DEVICE_MAX_WORK_GROUP_SIZE.\n");
+		exit(1);
+	}
+
+	err = clGetDeviceInfo(device_id, CL_DEVICE_MAX_WORK_ITEM_SIZES, sizeof(max_work_item_sizes), &max_work_item_sizes, NULL);
+
+	if (err != CL_SUCCESS) {
+		printf("Error: Failed to get CL_DEVICE_MAX_WORK_ITEM_SIZES.\n");
+		exit(1);
+	}
+
+	// DEBUG
+	printf("max_work_group_size: %d\n", max_work_group_size);
+	printf("max_work_item_sizes[0]: %d\n", max_work_item_sizes[0]);
+	printf("max_work_item_sizes[1]: %d\n", max_work_item_sizes[1]);
+
 	/* Set kernel arguments and launch init */
 	size_t localWorkSize[2], globalWorkSize[2];
 	int i;
 	int ndim = NDIM;
 	int sdim = ceil((double)NDIM / (double)GLOBAL_WORK_SIZE);
-	float startNum = 0.0f;
+	float startNum = 0.0f + 1;
 
 	for (i = 0; i < 2; i++) {
 		localWorkSize[i] = LOCAL_WORK_SIZE;
@@ -283,54 +247,69 @@ int main(int argc, char** argv)
 	}
 
 	if (err != CL_SUCCESS) {
-		printf("Error: Failed to set kernel arguments. %d\n", err);
+		printf("Error: Failed to set init kernel arguments. %d\n", err);
 		exit(1);
 	}
 
 	err = clEnqueueNDRangeKernel(commands, init, 2, NULL, globalWorkSize, localWorkSize, 0, NULL, NULL);
 
 	if (err != CL_SUCCESS) {
-		printf("Error: Failed to execute kernel. %d\n", err);
+		printf("Error: Failed to execute init kernel. %d\n", err);
+		exit(1);
+	}
+
+	/* Set kernel arguments and launch compute */
+	if (!USE_GPU) { // CPU
+		err = clSetKernelArg(compute, 0, sizeof(cl_mem), (void *)&d_A);
+		err |= clSetKernelArg(compute, 1, sizeof(cl_mem), (void *)&d_B);
+		err |= clSetKernelArg(compute, 2, sizeof(cl_mem), (void *)&d_C);
+		err |= clSetKernelArg(compute, 3, sizeof(int), (void *)&ndim);
+	}
+	else { // GPU
+		// Do something
+	}
+
+	if (err != CL_SUCCESS) {
+		printf("Error: Failed to set compute kernel arguments. %d\n", err);
+		exit(1);
+	}
+
+	err = clEnqueueNDRangeKernel(commands, compute, 2, NULL, globalWorkSize, localWorkSize, 0, NULL, NULL);
+
+	if (err != CL_SUCCESS) {
+		printf("Error: Failed to execute compute kernel. %d\n", err);
 		exit(1);
 	}
 
 	/* Retrieve result from device */
-	err = clEnqueueReadBuffer(commands, d_A, CL_TRUE, 0, m_size, h_A, 0, NULL, NULL);
+	err = clEnqueueReadBuffer(commands, d_C, CL_TRUE, 0, m_size, h_C, 0, NULL, NULL);
 
 	if (err != CL_SUCCESS) {
 		printf("Error: Failed to read output array. %d\n", err);
 		exit(1);
 	}
 
+	// DEBUG
+	clEnqueueReadBuffer(commands, d_A, CL_TRUE, 0, m_size, h_A, 0, NULL, NULL);
+	clEnqueueReadBuffer(commands, d_B, CL_TRUE, 0, m_size, h_B, 0, NULL, NULL);
+
 	timer_stop(1); // DEBUG
 
 	printf("Time elapsed : %lf sec\n", timer_read(1));
 
-	// DEBUG
-	/*
-	for (i = 0; i < m_size; i++) {
-		if (i % NDIM == 0)
-			printf("\n");
-		printf("%8.2lf ", h_A[i]);
-	}
-	printf("\n");
-	*/
-	/*
-	if( validation )
-		check_mat_mul( c, a, b );
-
 	if( print_matrix )
 	{
+		/*
 		printf("MATRIX A: \n");
-		print_mat(a);
+		print_mat(h_A);
 
 		printf("MATRIX B: \n");
-		print_mat(b);
+		print_mat(h_B);
+		*/
 
 		printf("MATRIX C: \n");
-		print_mat(c);
+		print_mat(h_C);
 	}
-	*/
 
 	/* Cleanup */
 	free(h_A);
