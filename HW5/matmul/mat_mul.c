@@ -5,15 +5,17 @@
 #include <CL/opencl.h>
 #include <stdbool.h>
 #include <math.h>
+#include <string.h>
 #include "timers.h"
 
 #define USE_GPU				0
 
 #define MAX_SOURCE_SIZE		0x100000
+#define KCNT				3			// Number of different kernels
 
-#define NDIM				1024
-#define GLOBAL_WORK_SIZE	1024
-#define LOCAL_WORK_SIZE		1			// Should not exceed 32 on Chundoong CPU,
+#define NDIM				4
+#define GLOBAL_WORK_SIZE	4
+#define LOCAL_WORK_SIZE		2			// Should not exceed 32 on Chundoong CPU,
 										// because MAX_WORK_GROUP_SIZE = 1024 = 32 ^ 2.
 
 int print_matrix = 0;
@@ -71,8 +73,8 @@ int main(int argc, char** argv)
 	cl_device_id device_id;
 	cl_context context;
 	cl_command_queue commands;
-	cl_program init_program, compute_program;
-	cl_kernel init, compute;
+	cl_program programs[KCNT];
+	cl_kernel kernels[KCNT];
 
 	cl_mem d_A;
 	cl_mem d_B;
@@ -114,7 +116,43 @@ int main(int argc, char** argv)
 		return EXIT_FAILURE;
 	}
 
-	/* Create init & compute program from source files */
+	/* Create init & compute programs from source files */
+	FILE *fp;
+	char *fileName[KCNT];
+	char *src_str;
+	size_t src_size;
+	int i;
+
+	for (i = 0; i < KCNT; i++) {
+		fileName[i] = (char*) malloc(100 * sizeof(char));
+	}
+
+	strcpy(fileName[0], "./mat_mul_init.cl");
+	strcpy(fileName[1], "./mat_mul_cpu.cl");
+	strcpy(fileName[2], "./mat_mul_gpu.cl");
+
+	for (i = 0; i < KCNT; i++) {
+		fp = fopen(fileName[i], "r");
+		if (!fp) {
+			perror("File read failed");
+			return 1;
+		}
+		src_str = (char*) malloc(MAX_SOURCE_SIZE);
+		src_size = fread(src_str, 1, MAX_SOURCE_SIZE, fp);
+
+		programs[i] = clCreateProgramWithSource(context, 1, (const char **)&src_str, (const size_t *)&src_size, &err);
+
+		if (!programs[i]) {
+			printf("Error: Failed to create program %d.\n", i);
+			return EXIT_FAILURE;
+		}
+
+		fclose(fp);
+		free(src_str);
+		free(fileName[i]);
+	}
+
+	/*
 	FILE *fp1, *fp2;
 	char initFileName[] = "./mat_mul_init.cl";
 	char computeFileName[] = "./mat_mul_compute.cl";
@@ -146,8 +184,23 @@ int main(int argc, char** argv)
 
 	fclose(fp1);
 	fclose(fp2);
+	*/
 
-	/* Build the program executable */
+	/* Build the program executables */
+	for (i = 0; i < KCNT; i++) {
+		err = clBuildProgram(programs[i], 0, NULL, NULL, NULL, NULL);
+		
+		if (err != CL_SUCCESS) {
+			size_t len;
+			char buffer[2048];
+			printf("Error: Failed to build program %d executable.\n", i);
+			clGetProgramBuildInfo(programs[i], device_id, CL_PROGRAM_BUILD_LOG, sizeof(buffer), buffer, &len);
+			printf("%s\n", buffer);
+			exit(1);
+		}
+	}
+
+	/*
 	err = clBuildProgram(init_program, 0, NULL, NULL, NULL, NULL);
 	if (err != CL_SUCCESS) {
 		size_t len;
@@ -167,8 +220,24 @@ int main(int argc, char** argv)
 		printf("%s\n", buffer);
 		exit(1);
 	}
+	*/
 
-	/* Create init & compute kernel */
+	/* Create init & compute kernels */
+	char kernelName[100];
+
+	for (i = 0; i < KCNT; i++) {
+		if (i == 0) strcpy(kernelName, "mat_mul_init");
+		else if (i == 1) strcpy(kernelName, "mat_mul_cpu");
+		else if (i == 2) strcpy(kernelName, "mat_mul_gpu");
+
+		kernels[i] = clCreateKernel(programs[i], kernelName, &err);
+		if (!kernels[i] || err != CL_SUCCESS) {
+			printf("Error: Failed to create kernel %d.\n", i);
+			exit(1);
+		}
+	}
+
+	/*
 	init = clCreateKernel(init_program, "mat_mul_init", &err);
 	if (!init || err != CL_SUCCESS) {
 		printf("Error: Failed to create init kernel.\n");
@@ -179,6 +248,7 @@ int main(int argc, char** argv)
 		printf("Error: Failed to create compute kernel.\n");
 		exit(1);
 	}
+	*/
 
 	/* Create buffers for matrices in device global memory */
 	if (!USE_GPU) { // If using CPU, just use the host memory
@@ -225,7 +295,8 @@ int main(int argc, char** argv)
 
 	/* Set kernel arguments and launch init */
 	size_t localWorkSize[2], globalWorkSize[2];
-	int i;
+	int t_size = LOCAL_WORK_SIZE;
+	int t_num = ceil((double)NDIM / (double)t_size);
 	int ndim = NDIM;
 	int sdim = ceil((double)NDIM / (double)GLOBAL_WORK_SIZE);
 	float startNum = 0.0f + 1;
@@ -236,11 +307,11 @@ int main(int argc, char** argv)
 	}
 
 	if (!USE_GPU) { // CPU
-		err = clSetKernelArg(init, 0, sizeof(cl_mem), (void *)&d_A);
-		err |= clSetKernelArg(init, 1, sizeof(cl_mem), (void *)&d_B);
-		err |= clSetKernelArg(init, 2, sizeof(int), (void *)&ndim);
-		err |= clSetKernelArg(init, 3, sizeof(int), (void *)&sdim);
-		err |= clSetKernelArg(init, 4, sizeof(float), (void *)&startNum);
+		err = clSetKernelArg(kernels[0], 0, sizeof(cl_mem), (void *)&d_A);
+		err |= clSetKernelArg(kernels[0], 1, sizeof(cl_mem), (void *)&d_B);
+		err |= clSetKernelArg(kernels[0], 2, sizeof(int), (void *)&ndim);
+		err |= clSetKernelArg(kernels[0], 3, sizeof(int), (void *)&sdim);
+		err |= clSetKernelArg(kernels[0], 4, sizeof(float), (void *)&startNum);
 	}
 	else { // GPU
 		// Do something
@@ -251,7 +322,7 @@ int main(int argc, char** argv)
 		exit(1);
 	}
 
-	err = clEnqueueNDRangeKernel(commands, init, 2, NULL, globalWorkSize, localWorkSize, 0, NULL, NULL);
+	err = clEnqueueNDRangeKernel(commands, kernels[0], 2, NULL, globalWorkSize, localWorkSize, 0, NULL, NULL);
 
 	if (err != CL_SUCCESS) {
 		printf("Error: Failed to execute init kernel. %d\n", err);
@@ -260,10 +331,12 @@ int main(int argc, char** argv)
 
 	/* Set kernel arguments and launch compute */
 	if (!USE_GPU) { // CPU
-		err = clSetKernelArg(compute, 0, sizeof(cl_mem), (void *)&d_A);
-		err |= clSetKernelArg(compute, 1, sizeof(cl_mem), (void *)&d_B);
-		err |= clSetKernelArg(compute, 2, sizeof(cl_mem), (void *)&d_C);
-		err |= clSetKernelArg(compute, 3, sizeof(int), (void *)&ndim);
+		err = clSetKernelArg(kernels[1], 0, sizeof(cl_mem), (void *)&d_A);
+		err |= clSetKernelArg(kernels[1], 1, sizeof(cl_mem), (void *)&d_B);
+		err |= clSetKernelArg(kernels[1], 2, sizeof(cl_mem), (void *)&d_C);
+		err |= clSetKernelArg(kernels[1], 3, sizeof(int), (void *)&ndim);
+		err |= clSetKernelArg(kernels[1], 4, sizeof(int), (void *)&t_size);
+		err |= clSetKernelArg(kernels[1], 5, sizeof(int), (void *)&t_num);
 	}
 	else { // GPU
 		// Do something
@@ -274,8 +347,13 @@ int main(int argc, char** argv)
 		exit(1);
 	}
 
-	err = clEnqueueNDRangeKernel(commands, compute, 2, NULL, globalWorkSize, localWorkSize, 0, NULL, NULL);
-
+	if (!USE_GPU) {
+		err = clEnqueueNDRangeKernel(commands, kernels[1], 2, NULL, globalWorkSize, localWorkSize, 0, NULL, NULL);
+	}
+	else {
+		err = clEnqueueNDRangeKernel(commands, kernels[2], 2, NULL, globalWorkSize, localWorkSize, 0, NULL, NULL);
+	}
+		
 	if (err != CL_SUCCESS) {
 		printf("Error: Failed to execute compute kernel. %d\n", err);
 		exit(1);
@@ -320,10 +398,17 @@ int main(int argc, char** argv)
 	clReleaseMemObject(d_B);
 	clReleaseMemObject(d_C);
 
+	for (i = 0; i < KCNT; i++) {
+		clReleaseProgram(programs[i]);
+		clReleaseKernel(kernels[i]);
+	}
+
+	/*
 	clReleaseProgram(init_program);
 	clReleaseProgram(compute_program);
 	clReleaseKernel(init);
 	clReleaseKernel(compute);
+	*/
 	clReleaseCommandQueue(commands);
 	clReleaseContext(context);
 
