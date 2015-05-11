@@ -13,9 +13,9 @@
 #define MAX_SOURCE_SIZE		0x100000
 #define KCNT				3			// Number of different kernels
 
-#define NDIM				4
-#define GLOBAL_WORK_SIZE	4
-#define LOCAL_WORK_SIZE		2			// Should not exceed 32 on Chundoong CPU,
+#define NDIM				4096
+#define GLOBAL_WORK_SIZE	NDIM
+#define LOCAL_WORK_SIZE		32			// Should not exceed 32 on Chundoong CPU,
 										// because MAX_WORK_GROUP_SIZE = 1024 = 32 ^ 2.
 
 int print_matrix = 0;
@@ -152,40 +152,6 @@ int main(int argc, char** argv)
 		free(fileName[i]);
 	}
 
-	/*
-	FILE *fp1, *fp2;
-	char initFileName[] = "./mat_mul_init.cl";
-	char computeFileName[] = "./mat_mul_compute.cl";
-	char *src_str1, *src_str2;
-	size_t src_size1, src_size2;
-
-	fp1 = fopen(initFileName, "r");
-	fp2 = fopen(computeFileName, "r");
-	if (!fp1 || !fp2) {
-		perror("File read failed");
-		return 1;
-	}
-	src_str1 = (char*) malloc(MAX_SOURCE_SIZE);
-	src_str2 = (char*) malloc(MAX_SOURCE_SIZE);
-	src_size1 = fread(src_str1, 1, MAX_SOURCE_SIZE, fp1);
-	src_size2 = fread(src_str2, 1, MAX_SOURCE_SIZE, fp2);
-
-	init_program = clCreateProgramWithSource(context, 1, (const char **)&src_str1, (const size_t *)&src_size1, &err);
-	if (!init_program) {
-		printf("Error: Failed to create compute program.\n");
-		return EXIT_FAILURE;
-	}
-
-	compute_program = clCreateProgramWithSource(context, 1, (const char **)&src_str2, (const size_t *)&src_size2, &err);
-	if (!compute_program) {
-		printf("Error: Failed to create compute program.\n");
-		return EXIT_FAILURE;
-	}
-
-	fclose(fp1);
-	fclose(fp2);
-	*/
-
 	/* Build the program executables */
 	for (i = 0; i < KCNT; i++) {
 		err = clBuildProgram(programs[i], 0, NULL, NULL, NULL, NULL);
@@ -199,28 +165,6 @@ int main(int argc, char** argv)
 			exit(1);
 		}
 	}
-
-	/*
-	err = clBuildProgram(init_program, 0, NULL, NULL, NULL, NULL);
-	if (err != CL_SUCCESS) {
-		size_t len;
-		char buffer[2048];
-		printf("Error: Failed to build program executable.\n");
-		clGetProgramBuildInfo(init_program, device_id, CL_PROGRAM_BUILD_LOG, sizeof(buffer), buffer, &len);
-		printf("%s\n", buffer);
-		exit(1);
-	}
-
-	err = clBuildProgram(compute_program, 0, NULL, NULL, NULL, NULL);
-	if (err != CL_SUCCESS) {
-		size_t len;
-		char buffer[2048];
-		printf("Error: Failed to build program executable.\n");
-		clGetProgramBuildInfo(compute_program, device_id, CL_PROGRAM_BUILD_LOG, sizeof(buffer), buffer, &len);
-		printf("%s\n", buffer);
-		exit(1);
-	}
-	*/
 
 	/* Create init & compute kernels */
 	char kernelName[100];
@@ -236,19 +180,6 @@ int main(int argc, char** argv)
 			exit(1);
 		}
 	}
-
-	/*
-	init = clCreateKernel(init_program, "mat_mul_init", &err);
-	if (!init || err != CL_SUCCESS) {
-		printf("Error: Failed to create init kernel.\n");
-		exit(1);
-	}
-	compute = clCreateKernel(compute_program, "mat_mul_compute", &err);
-	if (!compute || err != CL_SUCCESS) {
-		printf("Error: Failed to create compute kernel.\n");
-		exit(1);
-	}
-	*/
 
 	/* Create buffers for matrices in device global memory */
 	if (!USE_GPU) { // If using CPU, just use the host memory
@@ -295,8 +226,8 @@ int main(int argc, char** argv)
 
 	/* Set kernel arguments and launch init */
 	size_t localWorkSize[2], globalWorkSize[2];
-	int t_size = LOCAL_WORK_SIZE;
-	int t_num = ceil((double)NDIM / (double)t_size);
+	int tileSize = LOCAL_WORK_SIZE;
+	int tileNum = ceil((double)NDIM / (double)tileSize);
 	int ndim = NDIM;
 	int sdim = ceil((double)NDIM / (double)GLOBAL_WORK_SIZE);
 	float startNum = 0.0f + 1;
@@ -334,9 +265,11 @@ int main(int argc, char** argv)
 		err = clSetKernelArg(kernels[1], 0, sizeof(cl_mem), (void *)&d_A);
 		err |= clSetKernelArg(kernels[1], 1, sizeof(cl_mem), (void *)&d_B);
 		err |= clSetKernelArg(kernels[1], 2, sizeof(cl_mem), (void *)&d_C);
-		err |= clSetKernelArg(kernels[1], 3, sizeof(int), (void *)&ndim);
-		err |= clSetKernelArg(kernels[1], 4, sizeof(int), (void *)&t_size);
-		err |= clSetKernelArg(kernels[1], 5, sizeof(int), (void *)&t_num);
+		err |= clSetKernelArg(kernels[1], 3, sizeof(float) * tileSize * tileSize, NULL);
+		err |= clSetKernelArg(kernels[1], 4, sizeof(float) * tileSize * tileSize, NULL);
+		err |= clSetKernelArg(kernels[1], 5, sizeof(int), (void *)&ndim);
+		err |= clSetKernelArg(kernels[1], 6, sizeof(int), (void *)&tileSize);
+		err |= clSetKernelArg(kernels[1], 7, sizeof(int), (void *)&tileNum);
 	}
 	else { // GPU
 		// Do something
@@ -377,13 +310,11 @@ int main(int argc, char** argv)
 
 	if( print_matrix )
 	{
-		/*
 		printf("MATRIX A: \n");
 		print_mat(h_A);
 
 		printf("MATRIX B: \n");
 		print_mat(h_B);
-		*/
 
 		printf("MATRIX C: \n");
 		print_mat(h_C);
@@ -402,13 +333,6 @@ int main(int argc, char** argv)
 		clReleaseProgram(programs[i]);
 		clReleaseKernel(kernels[i]);
 	}
-
-	/*
-	clReleaseProgram(init_program);
-	clReleaseProgram(compute_program);
-	clReleaseKernel(init);
-	clReleaseKernel(compute);
-	*/
 	clReleaseCommandQueue(commands);
 	clReleaseContext(context);
 
