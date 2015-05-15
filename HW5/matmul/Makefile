@@ -15,3 +15,6 @@ clean:
 
 run: $(TARGET)
 	thorq --add --mode single --device gpu --timeout 100 ./$(TARGET)
+
+run_print: $(TARGET)
+	thorq --add --mode single --device gpu --timeout 100 ./$(TARGET) -p

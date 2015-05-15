@@ -12,10 +12,11 @@
 
 #define MAX_SOURCE_SIZE		0x100000
 #define KCNT				3			// Number of different kernels
+										// (init, cpu, gpu)
 
-#define NDIM				4096
+#define NDIM				8
 #define GLOBAL_WORK_SIZE	NDIM
-#define LOCAL_WORK_SIZE		32			// Should not exceed 32 on Chundoong CPU,
+#define LOCAL_WORK_SIZE		4			// Should not exceed 32 on Chundoong CPU,
 										// because MAX_WORK_GROUP_SIZE = 1024 = 32 ^ 2.
 
 int print_matrix = 0;
@@ -127,9 +128,9 @@ int main(int argc, char** argv)
 		fileName[i] = (char*) malloc(100 * sizeof(char));
 	}
 
-	strcpy(fileName[0], "./mat_mul_init.cl");
-	strcpy(fileName[1], "./mat_mul_cpu.cl");
-	strcpy(fileName[2], "./mat_mul_gpu.cl");
+	strcpy(fileName[0], "./init.cl");
+	strcpy(fileName[1], "./cpu.cl");
+	strcpy(fileName[2], "./gpu.cl");
 
 	for (i = 0; i < KCNT; i++) {
 		fp = fopen(fileName[i], "r");
@@ -220,9 +221,9 @@ int main(int argc, char** argv)
 	}
 
 	// DEBUG
-	printf("max_work_group_size: %d\n", max_work_group_size);
-	printf("max_work_item_sizes[0]: %d\n", max_work_item_sizes[0]);
-	printf("max_work_item_sizes[1]: %d\n", max_work_item_sizes[1]);
+	printf("max_work_group_size: %zu\n", max_work_group_size);
+	printf("max_work_item_sizes[0]: %zu\n", max_work_item_sizes[0]);
+	printf("max_work_item_sizes[1]: %zu\n", max_work_item_sizes[1]);
 
 	/* Set kernel arguments and launch init */
 	size_t localWorkSize[2], globalWorkSize[2];
@@ -230,6 +231,8 @@ int main(int argc, char** argv)
 	int tileNum = ceil((double)NDIM / (double)tileSize);
 	int ndim = NDIM;
 	int sdim = ceil((double)NDIM / (double)GLOBAL_WORK_SIZE);
+	int workload = tileSize; // A work-item works on a whole row
+	int rts = 1; // workload / tileSize, but 1 for now
 	float startNum = 0.0f + 1;
 
 	for (i = 0; i < 2; i++) {
@@ -270,6 +273,9 @@ int main(int argc, char** argv)
 		err |= clSetKernelArg(kernels[1], 5, sizeof(int), (void *)&ndim);
 		err |= clSetKernelArg(kernels[1], 6, sizeof(int), (void *)&tileSize);
 		err |= clSetKernelArg(kernels[1], 7, sizeof(int), (void *)&tileNum);
+		err |= clSetKernelArg(kernels[1], 8, sizeof(float) * workload, NULL);
+		err |= clSetKernelArg(kernels[1], 9, sizeof(int), (void *)&workload);
+		err |= clSetKernelArg(kernels[1], 10, sizeof(int), (void *)&rts);
 	}
 	else { // GPU
 		// Do something

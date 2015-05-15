@@ -1,4 +1,4 @@
-// Tiled and coalesced version
+// Version 2: tiled and coalesced
 __kernel void mat_mul_cpu(
 		const __global float* A,
 		const __global float* B,
