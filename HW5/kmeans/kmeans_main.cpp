@@ -1,15 +1,17 @@
-/*
-  Sequential implementation of KMeans
-*/
-
 #include "kmeans.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#include <CL/opencl.h>
 
-#define DATA_DIM 2
-#define DEFAULT_ITERATION 1024
+#define USE_GPU				0
+
+#define MAX_SOURCE_SIZE		0x100000
+#define KCNT				3
+
+#define DATA_DIM			2
+#define DEFAULT_ITERATION	1024
 
 #define GET_TIME(T) __asm__ __volatile__ ("rdtsc\n" : "=A" (T))
 
@@ -56,6 +58,19 @@ int main(int argc, char** argv)
 
     partitioned = (int*)malloc(sizeof(int)*data_n);
 
+	/* OpenCL */
+	int err;
+	int use_gpu = USE_GPU;
+
+	cl_device_id device_id;
+	cl_context context;
+	cl_command_queue commands;
+	cl_program programs[KCNT];
+	cl_kernel kernels[KCNT];
+
+	cl_mem centroids;
+	cl_mem data;
+	cl_mem partitioned;
 
     clock_gettime(CLOCK_MONOTONIC, &start);
     // Run Kmeans algorithm
