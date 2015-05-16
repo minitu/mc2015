@@ -8,17 +8,19 @@
 #include <string.h>
 #include "timers.h"
 
-#define USE_GPU				0
+#define USE_GPU				1
 
 #define MAX_SOURCE_SIZE		0x100000
-#define KCNT				3			// Number of different kernels
-										// (init, cpu, gpu)
+#define KCNT				3			/* Number of different kernels
+										 * (init, cpu, gpu) */
 
 #define NDIM				8
 #define GLOBAL_WORK_SIZE	NDIM
-#define LOCAL_WORK_SIZE		4			// Should not exceed 32 on Chundoong CPU,
-										// because MAX_WORK_GROUP_SIZE = 1024 = 32 ^ 2.
+#define LOCAL_WORK_SIZE		4			/* Should not exceed 32 on Chundoong CPU,
+										 * because MAX_WORK_GROUP_SIZE = 1024 = 32 ^ 2. */
+#define WORKLOAD			4			/* Maximum workload is equal to tile size */
 
+int debug = 0;
 int print_matrix = 0;
 
 void print_mat( float* mat )
@@ -35,9 +37,10 @@ void print_mat( float* mat )
 
 void print_help(const char* prog_name)
 {
-	printf("Usage: %s [-pvh]\n", prog_name );
+	printf("Usage: %s [-dph]\n", prog_name );
 	printf("\n");
 	printf("OPTIONS\n");
+	printf("  -d : print debug info.\n");
 	printf("  -p : print matrix data.\n");
 	printf("  -h : print this page.\n");
 }
@@ -46,20 +49,26 @@ void parse_opt(int argc, char** argv)
 {
 	int opt;
 
-	while( (opt = getopt(argc, argv, "ph:")) != -1 )
+	while( (opt = getopt(argc, argv, "dph:")) != -1 )
 	{
 		switch(opt)
 		{
-		case 'p':
-			// print matrix data.
-			print_matrix = 1;
-			break;
+			case 'd':
+				// print debug info
+				debug = 1;
+				break;
 
-		case 'h':
-		default:
-			print_help(argv[0]);
-			exit(0);
-			break;
+			case 'p':
+				// print matrix data
+				print_matrix = 1;
+				break;
+
+			case 'h':
+				// print help
+			default:
+				print_help(argv[0]);
+				exit(0);
+				break;
 		}
 	}
 }
@@ -68,9 +77,12 @@ int main(int argc, char** argv)
 {
 	parse_opt( argc, argv );
 
+	timer_start(1); // DEBUG
+
 	/* OpenCL variables */
 	int err;
-	
+	int use_gpu = USE_GPU;
+
 	cl_device_id device_id;
 	cl_context context;
 	cl_command_queue commands;
@@ -82,12 +94,10 @@ int main(int argc, char** argv)
 	cl_mem d_C;
 
 	/* Allocate host memory for matrices */
-	unsigned long m_size = (unsigned long)NDIM * (unsigned long)NDIM;
+	unsigned long m_size = (unsigned long)NDIM * (unsigned long)NDIM; // Total matrix size
 	float* h_A = (float*) malloc(m_size * sizeof(float));
 	float* h_B = (float*) malloc(m_size * sizeof(float));
 	float* h_C = (float*) malloc(m_size * sizeof(float));
-
-	timer_start(1); // DEBUG
 
 	/* Gather platform data */
 	cl_uint dev_cnt = 0;
@@ -96,10 +106,40 @@ int main(int argc, char** argv)
 	cl_platform_id platform_ids[100];
 	clGetPlatformIDs(dev_cnt, platform_ids, NULL);
 
-	/* Connect to a compute device */
+	/* Get platform info */
+	int i;
+	size_t info_size;
+	char *platform_info;
+	const cl_platform_info attrTypes[4] = {
+		CL_PLATFORM_PROFILE,
+		CL_PLATFORM_VERSION,
+		CL_PLATFORM_NAME,
+		CL_PLATFORM_VENDOR };
+
+	for (i = 0; i < 4; i++) {
+		err = clGetPlatformInfo(platform_ids[0], attrTypes[i], 0, NULL, &info_size);
+		if (err != CL_SUCCESS) {
+			printf("Error: Failed to get info size.\n");
+			return EXIT_FAILURE;
+		}
+		platform_info = (char*) malloc(info_size);
+		err = clGetPlatformInfo(platform_ids[0], attrTypes[i], info_size, platform_info, NULL);
+		if (err != CL_SUCCESS) {
+			printf("Error: Failed to get platform info.\n");
+			return EXIT_FAILURE;
+		}
+
+		if (debug)
+			printf("%s\n", platform_info); // DEBUG
+
+		free(platform_info);
+	}
+
+
+	/* Connect to compute device */
 	err = clGetDeviceIDs(platform_ids[0], USE_GPU ? CL_DEVICE_TYPE_GPU : CL_DEVICE_TYPE_CPU, 1, &device_id, NULL);
 	if (err != CL_SUCCESS) {
-		printf("Error: Failed to create a device group.\n");
+		printf("Error: Failed to connect to compute device.\n");
 		return EXIT_FAILURE;
 	}
 
@@ -122,7 +162,6 @@ int main(int argc, char** argv)
 	char *fileName[KCNT];
 	char *src_str;
 	size_t src_size;
-	int i;
 
 	for (i = 0; i < KCNT; i++) {
 		fileName[i] = (char*) malloc(100 * sizeof(char));
@@ -156,7 +195,7 @@ int main(int argc, char** argv)
 	/* Build the program executables */
 	for (i = 0; i < KCNT; i++) {
 		err = clBuildProgram(programs[i], 0, NULL, NULL, NULL, NULL);
-		
+
 		if (err != CL_SUCCESS) {
 			size_t len;
 			char buffer[2048];
@@ -182,26 +221,6 @@ int main(int argc, char** argv)
 		}
 	}
 
-	/* Create buffers for matrices in device global memory */
-	if (!USE_GPU) { // If using CPU, just use the host memory
-		d_A = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, m_size, h_A, &err);
-		d_B = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, m_size, h_B, &err);;
-		d_C = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, m_size, h_C, &err);
-		if (!d_A || !d_B || !d_C) {
-			printf("Error: Failed to allocate device memory.\n");
-			exit(1);
-		}
-	}
-	else { // If using GPU, matrices need to be split up to fit into 3GB
-		d_A = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, m_size, h_A, &err);
-		d_B = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, m_size, h_B, &err);;
-		d_C = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, m_size, h_C, &err);
-		if (!d_A || !d_B || !d_C) {
-			printf("Error: Failed to allocate device memory.\n");
-			exit(1);
-		}
-	}
-
 	/* Find out maximum work group size & maximum work item sizes */
 	size_t max_work_group_size;
 	size_t max_work_item_sizes[3];
@@ -221,50 +240,67 @@ int main(int argc, char** argv)
 	}
 
 	// DEBUG
-	printf("max_work_group_size: %zu\n", max_work_group_size);
-	printf("max_work_item_sizes[0]: %zu\n", max_work_item_sizes[0]);
-	printf("max_work_item_sizes[1]: %zu\n", max_work_item_sizes[1]);
-
-	/* Set kernel arguments and launch init */
-	size_t localWorkSize[2], globalWorkSize[2];
-	int tileSize = LOCAL_WORK_SIZE;
-	int tileNum = ceil((double)NDIM / (double)tileSize);
-	int ndim = NDIM;
-	int sdim = ceil((double)NDIM / (double)GLOBAL_WORK_SIZE);
-	int workload = tileSize; // A work-item works on a whole row
-	int rts = 1; // workload / tileSize, but 1 for now
-	float startNum = 0.0f + 1;
-
-	for (i = 0; i < 2; i++) {
-		localWorkSize[i] = LOCAL_WORK_SIZE;
-		globalWorkSize[i] = GLOBAL_WORK_SIZE;
+	if (debug) {
+		printf("\n");
+		printf("max_work_group_size: %zu\n", max_work_group_size);
+		printf("max_work_item_sizes[0]: %zu\n", max_work_item_sizes[0]);
+		printf("max_work_item_sizes[1]: %zu\n\n", max_work_item_sizes[1]);
 	}
 
-	if (!USE_GPU) { // CPU
+	if (!USE_GPU) {
+		/******************** CPU ********************/
+
+		/* Create buffers for matrices in device global memory */
+		d_A = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(float) * m_size, h_A, &err);
+		d_B = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(float) * m_size, h_B, &err);;
+		d_C = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(float) * m_size, h_C, &err);
+		if (!d_A || !d_B || !d_C) {
+			printf("Error: Failed to allocate device memory.\n");
+			exit(1);
+		}
+
+		/* Set kernel arguments and launch init */
+		size_t initLocalWorkSize[2], initGlobalWorkSize[2];
+		size_t localWorkSize[2], globalWorkSize[2];
+		int tileSize = LOCAL_WORK_SIZE;
+		int tileNum = ceil((double)NDIM / (double)tileSize);
+		int ndim = NDIM;
+		int sdim = ceil((double)NDIM / (double)GLOBAL_WORK_SIZE);
+		int workload = WORKLOAD;
+		int rts = tileSize / workload;
+		float startNum = 0.0f + 1;
+
+		// Set work sizes
+		for (i = 0; i < 2; i++) {
+			initLocalWorkSize[i] = LOCAL_WORK_SIZE;
+			initGlobalWorkSize[i] = GLOBAL_WORK_SIZE;
+		}
+
+		localWorkSize[0] = tileSize;
+		localWorkSize[1] = rts;
+		globalWorkSize[0] = ndim;
+		globalWorkSize[1] = ndim / workload;
+
 		err = clSetKernelArg(kernels[0], 0, sizeof(cl_mem), (void *)&d_A);
 		err |= clSetKernelArg(kernels[0], 1, sizeof(cl_mem), (void *)&d_B);
 		err |= clSetKernelArg(kernels[0], 2, sizeof(int), (void *)&ndim);
 		err |= clSetKernelArg(kernels[0], 3, sizeof(int), (void *)&sdim);
 		err |= clSetKernelArg(kernels[0], 4, sizeof(float), (void *)&startNum);
-	}
-	else { // GPU
-		// Do something
-	}
+		err |= clSetKernelArg(kernels[0], 7, sizeof(int), (void *)&use_gpu);
 
-	if (err != CL_SUCCESS) {
-		printf("Error: Failed to set init kernel arguments. %d\n", err);
-		exit(1);
-	}
+		if (err != CL_SUCCESS) {
+			printf("Error: Failed to set init kernel arguments. %d\n", err);
+			exit(1);
+		}
 
-	err = clEnqueueNDRangeKernel(commands, kernels[0], 2, NULL, globalWorkSize, localWorkSize, 0, NULL, NULL);
+		err = clEnqueueNDRangeKernel(commands, kernels[0], 2, NULL, initGlobalWorkSize, initLocalWorkSize, 0, NULL, NULL);
 
-	if (err != CL_SUCCESS) {
-		printf("Error: Failed to execute init kernel. %d\n", err);
-		exit(1);
-	}
+		if (err != CL_SUCCESS) {
+			printf("Error: Failed to execute init kernel. %d\n", err);
+			exit(1);
+		}
 
-	/* Set kernel arguments and launch compute */
-	if (!USE_GPU) { // CPU
+		/* Set kernel arguments and launch compute */
 		err = clSetKernelArg(kernels[1], 0, sizeof(cl_mem), (void *)&d_A);
 		err |= clSetKernelArg(kernels[1], 1, sizeof(cl_mem), (void *)&d_B);
 		err |= clSetKernelArg(kernels[1], 2, sizeof(cl_mem), (void *)&d_C);
@@ -273,42 +309,197 @@ int main(int argc, char** argv)
 		err |= clSetKernelArg(kernels[1], 5, sizeof(int), (void *)&ndim);
 		err |= clSetKernelArg(kernels[1], 6, sizeof(int), (void *)&tileSize);
 		err |= clSetKernelArg(kernels[1], 7, sizeof(int), (void *)&tileNum);
-		err |= clSetKernelArg(kernels[1], 8, sizeof(float) * workload, NULL);
-		err |= clSetKernelArg(kernels[1], 9, sizeof(int), (void *)&workload);
-		err |= clSetKernelArg(kernels[1], 10, sizeof(int), (void *)&rts);
-	}
-	else { // GPU
-		// Do something
-	}
+		err |= clSetKernelArg(kernels[1], 8, sizeof(int), (void *)&workload);
+		err |= clSetKernelArg(kernels[1], 9, sizeof(int), (void *)&rts);
 
-	if (err != CL_SUCCESS) {
-		printf("Error: Failed to set compute kernel arguments. %d\n", err);
-		exit(1);
-	}
+		if (err != CL_SUCCESS) {
+			printf("Error: Failed to set compute kernel arguments. %d\n", err);
+			exit(1);
+		}
 
-	if (!USE_GPU) {
 		err = clEnqueueNDRangeKernel(commands, kernels[1], 2, NULL, globalWorkSize, localWorkSize, 0, NULL, NULL);
+
+		if (err != CL_SUCCESS) {
+			printf("Error: Failed to execute compute kernel. %d\n", err);
+			exit(1);
+		}
+
+		/* Retrieve result from device */
+		err = clEnqueueReadBuffer(commands, d_C, CL_TRUE, 0, sizeof(float) * m_size, h_C, 0, NULL, NULL);
+
+		if (err != CL_SUCCESS) {
+			printf("Error: Failed to read output array. %d\n", err);
+			exit(1);
+		}
+
+		// DEBUG
+		clEnqueueReadBuffer(commands, d_A, CL_TRUE, 0, sizeof(float) * m_size, h_A, 0, NULL, NULL);
+		clEnqueueReadBuffer(commands, d_B, CL_TRUE, 0, sizeof(float) * m_size, h_B, 0, NULL, NULL);
+
 	}
 	else {
-		err = clEnqueueNDRangeKernel(commands, kernels[2], 2, NULL, globalWorkSize, localWorkSize, 0, NULL, NULL);
-	}
-		
-	if (err != CL_SUCCESS) {
-		printf("Error: Failed to execute compute kernel. %d\n", err);
-		exit(1);
-	}
+		/******************** GPU ********************/
 
-	/* Retrieve result from device */
-	err = clEnqueueReadBuffer(commands, d_C, CL_TRUE, 0, m_size, h_C, 0, NULL, NULL);
+		/* To initialize, divide each matrix into sets of rows */
+		int set_rows = NDIM; // Number of rows per set (each row has 100,000 columns max)
+		int set_cnt = 1;
+		unsigned long set_size;
 
-	if (err != CL_SUCCESS) {
-		printf("Error: Failed to read output array. %d\n", err);
-		exit(1);
+		if (NDIM > 512) {
+			set_rows = 512;
+			set_cnt = ceil((double)NDIM / (double)set_rows);
+		}
+
+		set_size = (unsigned long)set_rows * (unsigned long)NDIM;
+
+		/* Variable definitions */
+		size_t initGlobalWorkSize[1];
+		initGlobalWorkSize[0] = set_rows;
+		int ndim = NDIM;
+		int sdim = 1;
+		float startNum = 0.0f + 1;
+		int setNum = 0;
+
+		/* Create buffers for matrices in device global memory */
+		d_A = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(float) * set_size, NULL, &err);
+		d_B = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(float) * set_size, NULL, &err);
+		if (!d_A || !d_B) {
+			printf("Error: Failed to allocate device memory.\n");
+			exit(1);
+		}
+
+		/* Iterate init for A and B */
+		for (i = 0; i < set_cnt; i++) {
+			/* Set kernel arguments and execute init */
+			setNum = i;
+
+			err = clSetKernelArg(kernels[0], 0, sizeof(cl_mem), (void *)&d_A);
+			err |= clSetKernelArg(kernels[0], 1, sizeof(cl_mem), (void *)&d_B);
+			err |= clSetKernelArg(kernels[0], 2, sizeof(int), (void *)&ndim);
+			err |= clSetKernelArg(kernels[0], 3, sizeof(int), (void *)&sdim);
+			err |= clSetKernelArg(kernels[0], 4, sizeof(float), (void *)&startNum);
+			err |= clSetKernelArg(kernels[0], 5, sizeof(int), (void *)&setNum);
+			err |= clSetKernelArg(kernels[0], 6, sizeof(int), (void *)&set_rows);
+			err |= clSetKernelArg(kernels[0], 7, sizeof(int), (void *)&use_gpu);
+
+			if (err != CL_SUCCESS) {
+				printf("Error: Failed to set init kernel arguments. %d\n", err);
+				exit(1);
+			}
+
+			err = clEnqueueNDRangeKernel(commands, kernels[0], 1, NULL, initGlobalWorkSize, NULL, 0, NULL, NULL);
+
+			if (err != CL_SUCCESS) {
+				printf("Error: Failed to execute init kernel. %d\n", err);
+				exit(1);
+			}
+
+			startNum += (float)set_size;
+
+			size_t copy_size = sizeof(float) * set_size;
+
+			// Special care for last set, if NDIM is not a multiple of the number of rows in a set
+			if ((i == set_cnt - 1) && (NDIM % set_rows != 0)) { 
+				copy_size = sizeof(float) * (NDIM % set_rows) * NDIM;
+			}
+
+			/* Retrieve result from device */
+			err = clEnqueueReadBuffer(commands, d_A, CL_TRUE, 0, copy_size, h_A + set_size * i, 0, NULL, NULL);
+			err = clEnqueueReadBuffer(commands, d_B, CL_TRUE, 0, copy_size, h_B + set_size * i, 0, NULL, NULL);
+
+			if (err != CL_SUCCESS) {
+				printf("Error: Failed to read arrays. %d\n", err);
+				exit(1);
+			}
+		}
+
+		/* Free buffers */
+		clReleaseMemObject(d_A);
+		clReleaseMemObject(d_B);
+
+		/* To compute, divide area of C into 4096 X 4096 matrix blocks */
+		int blk_dim = NDIM; // Number of rows per set (each row has 100,000 columns max)
+		int blk_cnt = 1;
+		unsigned long blk_size;
+
+		if (NDIM > 4096) {
+			blk_dim = 4096;
+			blk_cnt = ceil((double)NDIM / (double)blk_dim);
+			blk_cnt *= blk_cnt;
+		}
+
+		blk_size = (unsigned long)blk_dim * (unsigned long)blk_dim;
+
+		/* Variable definitions */
+		size_t localWorkSize[2], globalWorkSize[2];
+		int tileSize = LOCAL_WORK_SIZE;
+		int tileNum = ceil((double)blk_dim / (double)tileSize);
+		int workload = WORKLOAD;
+		int rts = tileSize / workload;
+
+		// Set work sizes
+		for (i = 0; i < 2; i++) {
+			localWorkSize[i] = LOCAL_WORK_SIZE;
+			globalWorkSize[i] = blk_dim;
+		}
+
+		/*
+		   localWorkSize[0] = tileSize;
+		   localWorkSize[1] = rts;
+		   globalWorkSize[0] = ndim;
+		   globalWorkSize[1] = ndim / workload;
+		   */
+
+		/* Create buffers for matrices in device global memory */
+		d_A = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(float) * blk_size, NULL, &err);
+		d_B = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(float) * blk_size, NULL, &err);
+		d_C = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(float) * blk_size, NULL, &err);
+		if (!d_A || !d_B || !d_C) {
+			printf("Error: Failed to allocate device memory.\n");
+			exit(1);
+		}
+
+		/* Iterate compute loops */
+		for (i = 0; i < blk_cnt; i++) {
+
+			/* Set kernel arguments and launch compute */
+			err = clSetKernelArg(kernels[1], 0, sizeof(cl_mem), (void *)&d_A);
+			err |= clSetKernelArg(kernels[1], 1, sizeof(cl_mem), (void *)&d_B);
+			err |= clSetKernelArg(kernels[1], 2, sizeof(cl_mem), (void *)&d_C);
+			err |= clSetKernelArg(kernels[1], 3, sizeof(float) * tileSize * tileSize, NULL);
+			err |= clSetKernelArg(kernels[1], 4, sizeof(float) * tileSize * tileSize, NULL);
+			err |= clSetKernelArg(kernels[1], 5, sizeof(int), (void *)&ndim);
+			err |= clSetKernelArg(kernels[1], 6, sizeof(int), (void *)&tileSize);
+			err |= clSetKernelArg(kernels[1], 7, sizeof(int), (void *)&tileNum);
+			err |= clSetKernelArg(kernels[1], 8, sizeof(int), (void *)&workload);
+			err |= clSetKernelArg(kernels[1], 9, sizeof(int), (void *)&rts);
+
+			if (err != CL_SUCCESS) {
+				printf("Error: Failed to set compute kernel arguments. %d\n", err);
+				exit(1);
+			}
+
+			err = clEnqueueNDRangeKernel(commands, kernels[1], 2, NULL, globalWorkSize, localWorkSize, 0, NULL, NULL);
+
+			if (err != CL_SUCCESS) {
+				printf("Error: Failed to execute compute kernel. %d\n", err);
+				exit(1);
+			}
+
+			/* Retrieve result from device */
+			err = clEnqueueReadBuffer(commands, d_C, CL_TRUE, 0, sizeof(float) * m_size, h_C, 0, NULL, NULL);
+
+			if (err != CL_SUCCESS) {
+				printf("Error: Failed to read output array. %d\n", err);
+				exit(1);
+			}
+
+			// DEBUG
+			clEnqueueReadBuffer(commands, d_A, CL_TRUE, 0, sizeof(float) * m_size, h_A, 0, NULL, NULL);
+			clEnqueueReadBuffer(commands, d_B, CL_TRUE, 0, sizeof(float) * m_size, h_B, 0, NULL, NULL);
+		}
+
 	}
-
-	// DEBUG
-	clEnqueueReadBuffer(commands, d_A, CL_TRUE, 0, m_size, h_A, 0, NULL, NULL);
-	clEnqueueReadBuffer(commands, d_B, CL_TRUE, 0, m_size, h_B, 0, NULL, NULL);
 
 	timer_stop(1); // DEBUG
 
@@ -316,7 +507,7 @@ int main(int argc, char** argv)
 
 	if( print_matrix )
 	{
-		printf("MATRIX A: \n");
+		printf("\nMATRIX A: \n");
 		print_mat(h_A);
 
 		printf("MATRIX B: \n");

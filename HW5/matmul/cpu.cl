@@ -8,7 +8,6 @@ __kernel void mat_mul_cpu(
 		const int ndim,	// Matrix dimension
 		const int tileSize, // Tile size (of one side, to be exact)
 		const int tileNum, // Number of tiles (per dimension)
-		__local float* acc,
 		const int workload, // Workload per work-item
 		const int rts) // tileSize / workload
 {
@@ -19,6 +18,7 @@ __kernel void mat_mul_cpu(
 	const int globalCol = tileSize * get_group_id(1) + col;
 
 	// Initialize accumulation registers
+	float acc[32]; // Set to 32 since workload (or tile size) can't be larger than 32
 	for (int w = 0; w < workload; w++) {
 		acc[w] = 0.0f;
 	}
@@ -40,7 +40,7 @@ __kernel void mat_mul_cpu(
 		// Compute for single tile
 		for (int k = 0; k < tileSize; k++) {
 			for (int w = 0; w < workload; w++) {
-				acc[w] += Asub[tileSize * row + k] * Bsub[tileSize * k + col];
+				acc[w] += Asub[tileSize * row + k] * Bsub[tileSize * k + col + w * rts];
 			}
 		}
 
