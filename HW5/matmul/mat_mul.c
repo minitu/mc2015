@@ -8,17 +8,19 @@
 #include <string.h>
 #include "timers.h"
 
-#define USE_GPU				1
+#define USE_GPU				0
 
 #define MAX_SOURCE_SIZE		0x100000
 #define KCNT				3			/* Number of different kernels
 										 * (init, cpu, gpu) */
 
-#define NDIM				8
+#define NDIM				10000
 #define GLOBAL_WORK_SIZE	NDIM
-#define LOCAL_WORK_SIZE		4			/* Should not exceed 32 on Chundoong CPU,
-										 * because MAX_WORK_GROUP_SIZE = 1024 = 32 ^ 2. */
-#define WORKLOAD			4			/* Maximum workload is equal to tile size */
+#define LOCAL_WORK_SIZE		10			/* Should not exceed 32 on Chundoong CPU,
+										 * because MAX_WORK_GROUP_SIZE = 1024 = 32 ^ 2. 
+										 * Also, it should be a divisor of GLOBAL_WORK_SIZE. */
+#define WORKLOAD			10			/* Maximum workload is equal to tile size,
+										 * or LOCAL_WORK_SIZE */
 
 int debug = 0;
 int print_matrix = 0;
@@ -286,6 +288,8 @@ int main(int argc, char** argv)
 		err |= clSetKernelArg(kernels[0], 2, sizeof(int), (void *)&ndim);
 		err |= clSetKernelArg(kernels[0], 3, sizeof(int), (void *)&sdim);
 		err |= clSetKernelArg(kernels[0], 4, sizeof(float), (void *)&startNum);
+		err |= clSetKernelArg(kernels[0], 5, sizeof(int), (void *)&use_gpu);
+		err |= clSetKernelArg(kernels[0], 6, sizeof(int), (void *)&use_gpu);
 		err |= clSetKernelArg(kernels[0], 7, sizeof(int), (void *)&use_gpu);
 
 		if (err != CL_SUCCESS) {
@@ -462,17 +466,20 @@ int main(int argc, char** argv)
 		/* Iterate compute loops */
 		for (i = 0; i < blk_cnt; i++) {
 
+			/* Write A and B blocks to buffers */
+			err = clEnqueueWriteBuffer(commands, d_A, CL_TRUE, 0, sizeof(float) * blk_size, h_A, 0, NULL, NULL);
+
 			/* Set kernel arguments and launch compute */
 			err = clSetKernelArg(kernels[1], 0, sizeof(cl_mem), (void *)&d_A);
 			err |= clSetKernelArg(kernels[1], 1, sizeof(cl_mem), (void *)&d_B);
 			err |= clSetKernelArg(kernels[1], 2, sizeof(cl_mem), (void *)&d_C);
-			err |= clSetKernelArg(kernels[1], 3, sizeof(float) * tileSize * tileSize, NULL);
-			err |= clSetKernelArg(kernels[1], 4, sizeof(float) * tileSize * tileSize, NULL);
-			err |= clSetKernelArg(kernels[1], 5, sizeof(int), (void *)&ndim);
-			err |= clSetKernelArg(kernels[1], 6, sizeof(int), (void *)&tileSize);
-			err |= clSetKernelArg(kernels[1], 7, sizeof(int), (void *)&tileNum);
-			err |= clSetKernelArg(kernels[1], 8, sizeof(int), (void *)&workload);
-			err |= clSetKernelArg(kernels[1], 9, sizeof(int), (void *)&rts);
+			//err |= clSetKernelArg(kernels[1], 3, sizeof(float) * tileSize * tileSize, NULL);
+			//err |= clSetKernelArg(kernels[1], 4, sizeof(float) * tileSize * tileSize, NULL);
+			err |= clSetKernelArg(kernels[1], 3, sizeof(int), (void *)&blk_dim);
+			//err |= clSetKernelArg(kernels[1], 6, sizeof(int), (void *)&tileSize);
+			//err |= clSetKernelArg(kernels[1], 7, sizeof(int), (void *)&tileNum);
+			//err |= clSetKernelArg(kernels[1], 8, sizeof(int), (void *)&workload);
+			//err |= clSetKernelArg(kernels[1], 9, sizeof(int), (void *)&rts);
 
 			if (err != CL_SUCCESS) {
 				printf("Error: Failed to set compute kernel arguments. %d\n", err);
