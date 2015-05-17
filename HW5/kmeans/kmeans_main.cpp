@@ -6,9 +6,10 @@
 #include <CL/opencl.h>
 
 #define USE_GPU				0
+#define DEBUG				1
 
 #define MAX_SOURCE_SIZE		0x100000
-#define KCNT				3
+#define KCNT				2
 
 #define DATA_DIM			2
 #define DEFAULT_ITERATION	1024
@@ -60,7 +61,6 @@ int main(int argc, char** argv)
 
 	/* OpenCL */
 	int err;
-	int use_gpu = USE_GPU;
 
 	cl_device_id device_id;
 	cl_context context;
@@ -68,14 +68,179 @@ int main(int argc, char** argv)
 	cl_program programs[KCNT];
 	cl_kernel kernels[KCNT];
 
-	cl_mem centroids;
-	cl_mem data;
-	cl_mem partitioned;
+	cl_mem d_centroids;
+	cl_mem d_data;
+	cl_mem d_partitioned;
+
+	/* Gather platform data */
+	cl_uint dev_cnt = 0;
+	clGetPlatformIDs(0, 0, &dev_cnt);
+
+	cl_platform_id platform_ids[100];
+	clGetPlatformIDs(dev_cnt, platform_ids, NULL);
+
+	/* Get platform info */
+	int i;
+	size_t info_size;
+	char *platform_info;
+	const cl_platform_info attrTypes[4] = {
+		CL_PLATFORM_PROFILE,
+		CL_PLATFORM_VERSION,
+		CL_PLATFORM_NAME,
+		CL_PLATFORM_VENDOR };
+
+	for (i = 0; i < 4; i++) {
+		err = clGetPlatformInfo(platform_ids[0], attrTypes[i], 0, NULL, &info_size);
+		if (err != CL_SUCCESS) {
+			printf("Error: Failed to get info size.\n");
+			return EXIT_FAILURE;
+		}
+		platform_info = (char*) malloc(info_size);
+		err = clGetPlatformInfo(platform_ids[0], attrTypes[i], info_size, platform_info, NULL);
+		if (err != CL_SUCCESS) {
+			printf("Error: Failed to get platform info.\n");
+			return EXIT_FAILURE;
+		}
+
+		if (DEBUG)
+			printf("%s\n", platform_info); // DEBUG
+
+		free(platform_info);
+	}
+
+	/* Connect to compute device */
+	err = clGetDeviceIDs(platform_ids[0], USE_GPU ? CL_DEVICE_TYPE_GPU : CL_DEVICE_TYPE_CPU, 1, &device_id, NULL);
+	if (err != CL_SUCCESS) {
+		printf("Error: Failed to connect to compute device.\n");
+		return EXIT_FAILURE;
+	}
+
+	/* Create a compute context */
+	context = clCreateContext(0, 1, &device_id, NULL, NULL, &err);
+	if (!context) {
+		printf("Error: Failed to create a compute context.\n");
+		return EXIT_FAILURE;
+	}
+
+	/* Create an in-order command queue and attach it to the compute device */
+	commands = clCreateCommandQueue(context, device_id, 0, &err);
+	if (!commands) {
+		printf("Error: Failed to create a command queue.\n");
+		return EXIT_FAILURE;
+	}
+
+	/* Create init & compute programs from source files */
+	FILE *fp;
+	char *fileName[KCNT];
+	char *src_str;
+	size_t src_size;
+
+	for (i = 0; i < KCNT; i++) {
+		fileName[i] = (char*) malloc(100 * sizeof(char));
+	}
+
+	strcpy(fileName[0], "./cpu.cl");
+	strcpy(fileName[1], "./gpu.cl");
+
+	for (i = 0; i < KCNT; i++) {
+		fp = fopen(fileName[i], "r");
+		if (!fp) {
+			perror("File read failed");
+			return 1;
+		}
+		src_str = (char*) malloc(MAX_SOURCE_SIZE);
+		src_size = fread(src_str, 1, MAX_SOURCE_SIZE, fp);
+
+		programs[i] = clCreateProgramWithSource(context, 1, (const char **)&src_str, (const size_t *)&src_size, &err);
+
+		if (!programs[i]) {
+			printf("Error: Failed to create program %d.\n", i);
+			return EXIT_FAILURE;
+		}
+
+		fclose(fp);
+		free(src_str);
+		free(fileName[i]);
+	}
+
+	/* Build the program executables */
+	for (i = 0; i < KCNT; i++) {
+		err = clBuildProgram(programs[i], 0, NULL, NULL, NULL, NULL);
+
+		if (err != CL_SUCCESS) {
+			size_t len;
+			char buffer[2048];
+			printf("Error: Failed to build program %d executable.\n", i);
+			clGetProgramBuildInfo(programs[i], device_id, CL_PROGRAM_BUILD_LOG, sizeof(buffer), buffer, &len);
+			printf("%s\n", buffer);
+			exit(1);
+		}
+	}
+
+	/* Create init & compute kernels */
+	char kernelName[100];
+
+	for (i = 0; i < KCNT; i++) {
+		if (i == 0) strcpy(kernelName, "kmeans_cpu");
+		else if (i == 1) strcpy(kernelName, "kmeans_gpu");
+
+		kernels[i] = clCreateKernel(programs[i], kernelName, &err);
+		if (!kernels[i] || err != CL_SUCCESS) {
+			printf("Error: Failed to create kernel %d.\n", i);
+			exit(1);
+		}
+	}
+
+	/* Find out maximum work group size & maximum work item sizes */
+	size_t max_work_group_size;
+	size_t max_work_item_sizes[3];
+
+	err = clGetDeviceInfo(device_id, CL_DEVICE_MAX_WORK_GROUP_SIZE, sizeof(size_t), &max_work_group_size, NULL);
+
+	if (err != CL_SUCCESS) {
+		printf("Error: Failed to get CL_DEVICE_MAX_WORK_GROUP_SIZE.\n");
+		exit(1);
+	}
+
+	err = clGetDeviceInfo(device_id, CL_DEVICE_MAX_WORK_ITEM_SIZES, sizeof(max_work_item_sizes), &max_work_item_sizes, NULL);
+
+	if (err != CL_SUCCESS) {
+		printf("Error: Failed to get CL_DEVICE_MAX_WORK_ITEM_SIZES.\n");
+		exit(1);
+	}
+
+	// DEBUG
+	if (DEBUG) {
+		printf("\n");
+		printf("max_work_group_size: %zu\n", max_work_group_size);
+		printf("max_work_item_sizes[0]: %zu\n", max_work_item_sizes[0]);
+		printf("max_work_item_sizes[1]: %zu\n\n", max_work_item_sizes[1]);
+	}
 
     clock_gettime(CLOCK_MONOTONIC, &start);
-    // Run Kmeans algorithm
-    kmeans(iteration_n, class_n, data_n, (Point*)centroids, (Point*)data, partitioned);
-    clock_gettime(CLOCK_MONOTONIC, &end);
+    
+	// Run Kmeans algorithm
+	//kmeans(iteration_n, class_n, data_n, (Point*)centroids, (Point*)data, partitioned);
+    
+	if (!USE_GPU) {
+		/******************** CPU ********************/
+
+		// Allocate buffers
+		d_centroids = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(float) * DATA_DIM * class_n, centroids, &err);
+		d_data = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(float) * DATA_DIM * data_n, data, &err);
+		d_partitioned = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(int) * data_n, partitioned, &err);
+
+		if (err != CL_SUCCESS) {
+			printf("Error: Failed to allocate device memory. %d\n", err);
+			exit(1);
+		}
+
+	}
+	else {
+		/******************** GPU ********************/
+	}
+
+	clock_gettime(CLOCK_MONOTONIC, &end);
 
     timespec_subtract(&spent, &end, &start);
     printf("Time spent: %ld.%09ld\n", spent.tv_sec, spent.tv_nsec);
@@ -100,6 +265,18 @@ int main(int argc, char** argv)
     free(centroids);
     free(data);
     free(partitioned);
+
+	/* Cleanup */
+	clReleaseMemObject(d_A);
+	clReleaseMemObject(d_B);
+	clReleaseMemObject(d_C);
+
+	for (i = 0; i < KCNT; i++) {
+		clReleaseProgram(programs[i]);
+		clReleaseKernel(kernels[i]);
+	}
+	clReleaseCommandQueue(commands);
+	clReleaseContext(context);
 
     return 0;
 }
