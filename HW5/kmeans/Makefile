@@ -30,4 +30,4 @@ graph:
 	./plot_data.py result final_centroid.point data.point result.class result.png
 
 clean:
-	rm -f kmeans kmeans_main.o centroid.point data.point final_centroid.point result.class task*
+	rm -f kmeans kmeans_main.o centroid.point data.point final_centroid.point result.class task* result*.png
