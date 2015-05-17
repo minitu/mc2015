@@ -9,10 +9,13 @@ __kernel void mat_mul_gpu(
 	const int j = get_global_id(1);
 	int k;
 
+	/*
 	float tmp = 0.0f;
 	for (k = 0; k < ndim; k++) {
 		tmp += A[i * ndim + k] * B[k * ndim + j];
 	}
 
 	C[i * ndim + j] = tmp;
+	*/
+	C[i * ndim + j] = A[i * ndim + j];
 }

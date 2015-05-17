@@ -8,19 +8,21 @@
 #include <string.h>
 #include "timers.h"
 
-#define USE_GPU				0
+#define USE_GPU				1
 
 #define MAX_SOURCE_SIZE		0x100000
 #define KCNT				3			/* Number of different kernels
 										 * (init, cpu, gpu) */
 
-#define NDIM				10000
+#define NDIM				4
+#define BDIM				2
 #define GLOBAL_WORK_SIZE	NDIM
-#define LOCAL_WORK_SIZE		10			/* Should not exceed 32 on Chundoong CPU,
+#define LOCAL_WORK_SIZE		4			/* Should not exceed 32 on Chundoong CPU,
 										 * because MAX_WORK_GROUP_SIZE = 1024 = 32 ^ 2. 
 										 * Also, it should be a divisor of GLOBAL_WORK_SIZE. */
-#define WORKLOAD			10			/* Maximum workload is equal to tile size,
+#define WORKLOAD			4			/* Maximum workload is equal to tile size,
 										 * or LOCAL_WORK_SIZE */
+#define MIN(x,y)			((x < y) ? (x) : (y))
 
 int debug = 0;
 int print_matrix = 0;
@@ -97,9 +99,9 @@ int main(int argc, char** argv)
 
 	/* Allocate host memory for matrices */
 	unsigned long m_size = (unsigned long)NDIM * (unsigned long)NDIM; // Total matrix size
-	float* h_A = (float*) malloc(m_size * sizeof(float));
-	float* h_B = (float*) malloc(m_size * sizeof(float));
-	float* h_C = (float*) malloc(m_size * sizeof(float));
+	float* h_A = (float*) malloc(sizeof(float) * m_size);
+	float* h_B = (float*) malloc(sizeof(float) * m_size);
+	float* h_C = (float*) malloc(sizeof(float) * m_size);
 
 	/* Gather platform data */
 	cl_uint dev_cnt = 0;
@@ -304,6 +306,10 @@ int main(int argc, char** argv)
 			exit(1);
 		}
 
+		/* Read A and B matrices to host memory */
+		err = clEnqueueReadBuffer(commands, d_A, CL_TRUE, 0, sizeof(float) * m_size, h_A, 0, NULL, NULL);
+		err |= clEnqueueReadBuffer(commands, d_B, CL_TRUE, 0, sizeof(float) * m_size, h_B, 0, NULL, NULL);
+
 		/* Set kernel arguments and launch compute */
 		err = clSetKernelArg(kernels[1], 0, sizeof(cl_mem), (void *)&d_A);
 		err |= clSetKernelArg(kernels[1], 1, sizeof(cl_mem), (void *)&d_B);
@@ -335,10 +341,6 @@ int main(int argc, char** argv)
 			printf("Error: Failed to read output array. %d\n", err);
 			exit(1);
 		}
-
-		// DEBUG
-		clEnqueueReadBuffer(commands, d_A, CL_TRUE, 0, sizeof(float) * m_size, h_A, 0, NULL, NULL);
-		clEnqueueReadBuffer(commands, d_B, CL_TRUE, 0, sizeof(float) * m_size, h_B, 0, NULL, NULL);
 
 	}
 	else {
@@ -409,7 +411,7 @@ int main(int argc, char** argv)
 
 			/* Retrieve result from device */
 			err = clEnqueueReadBuffer(commands, d_A, CL_TRUE, 0, copy_size, h_A + set_size * i, 0, NULL, NULL);
-			err = clEnqueueReadBuffer(commands, d_B, CL_TRUE, 0, copy_size, h_B + set_size * i, 0, NULL, NULL);
+			err |= clEnqueueReadBuffer(commands, d_B, CL_TRUE, 0, copy_size, h_B + set_size * i, 0, NULL, NULL);
 
 			if (err != CL_SUCCESS) {
 				printf("Error: Failed to read arrays. %d\n", err);
@@ -426,10 +428,9 @@ int main(int argc, char** argv)
 		int blk_cnt = 1;
 		unsigned long blk_size;
 
-		if (NDIM > 4096) {
-			blk_dim = 4096;
+		if (NDIM > BDIM) {
+			blk_dim = BDIM;
 			blk_cnt = ceil((double)NDIM / (double)blk_dim);
-			blk_cnt *= blk_cnt;
 		}
 
 		blk_size = (unsigned long)blk_dim * (unsigned long)blk_dim;
@@ -443,7 +444,7 @@ int main(int argc, char** argv)
 
 		// Set work sizes
 		for (i = 0; i < 2; i++) {
-			localWorkSize[i] = LOCAL_WORK_SIZE;
+			//localWorkSize[i] = LOCAL_WORK_SIZE;
 			globalWorkSize[i] = blk_dim;
 		}
 
@@ -463,49 +464,161 @@ int main(int argc, char** argv)
 			exit(1);
 		}
 
+		int j, k, l;
+		int ch = blk_dim; // Height of C block
+		int cw = blk_dim; // Width of C block
+		const int float_size = sizeof(float);
+		const size_t buffer_origin[3] = {0, 0, 0};
+		size_t host_origin[3] = {0, 0, 0};
+		size_t region[3] = {1, 1, 1};
+		const size_t buffer_row_pitch = float_size * blk_dim;
+		const size_t host_row_pitch = float_size * NDIM;
+		const size_t host_slice_pitch = float_size * blk_size;
+		float pattern = 0.0f;
+		int leftover = blk_dim;
+		float* mid_blks = (float*) malloc(float_size * blk_size * blk_cnt); // Store intermediate C blocks here for later accumulation
+
 		/* Iterate compute loops */
-		for (i = 0; i < blk_cnt; i++) {
-
-			/* Write A and B blocks to buffers */
-			err = clEnqueueWriteBuffer(commands, d_A, CL_TRUE, 0, sizeof(float) * blk_size, h_A, 0, NULL, NULL);
-
-			/* Set kernel arguments and launch compute */
-			err = clSetKernelArg(kernels[1], 0, sizeof(cl_mem), (void *)&d_A);
-			err |= clSetKernelArg(kernels[1], 1, sizeof(cl_mem), (void *)&d_B);
-			err |= clSetKernelArg(kernels[1], 2, sizeof(cl_mem), (void *)&d_C);
-			//err |= clSetKernelArg(kernels[1], 3, sizeof(float) * tileSize * tileSize, NULL);
-			//err |= clSetKernelArg(kernels[1], 4, sizeof(float) * tileSize * tileSize, NULL);
-			err |= clSetKernelArg(kernels[1], 3, sizeof(int), (void *)&blk_dim);
-			//err |= clSetKernelArg(kernels[1], 6, sizeof(int), (void *)&tileSize);
-			//err |= clSetKernelArg(kernels[1], 7, sizeof(int), (void *)&tileNum);
-			//err |= clSetKernelArg(kernels[1], 8, sizeof(int), (void *)&workload);
-			//err |= clSetKernelArg(kernels[1], 9, sizeof(int), (void *)&rts);
-
-			if (err != CL_SUCCESS) {
-				printf("Error: Failed to set compute kernel arguments. %d\n", err);
-				exit(1);
+		for (i = 0; i < blk_cnt; i++) { // C block moves down
+			if (i == blk_cnt - 1) {
+				ch = MIN(blk_dim, NDIM - blk_dim * i); // For last row, height might be smaller
 			}
+			for (j = 0; j < blk_cnt; j++) { // C block moves right
+				if (j == blk_cnt - 1) {
+					cw = MIN(blk_dim, NDIM - blk_dim * j); // For last column, width might be smaller
+				}
+				for (k = 0; k < blk_cnt; k++) { // A and B blocks move
 
-			err = clEnqueueNDRangeKernel(commands, kernels[1], 2, NULL, globalWorkSize, localWorkSize, 0, NULL, NULL);
+					if (k == blk_cnt - 1) {
+						leftover = MIN(blk_dim, NDIM - blk_dim * k);
+					}
 
-			if (err != CL_SUCCESS) {
-				printf("Error: Failed to execute compute kernel. %d\n", err);
-				exit(1);
+					// Fill buffers with 0
+					err = clEnqueueFillBuffer(commands, d_A, (const void*)&pattern, float_size, 0, float_size * blk_size, 0, NULL, NULL);
+					err |= clEnqueueFillBuffer(commands, d_B, (const void*)&pattern, float_size, 0, float_size * blk_size, 0, NULL, NULL);
+
+					if (err != CL_SUCCESS) {
+						printf("Error: Failed to fill buffers. %d\n", err);
+						exit(1);
+					}
+
+					// Host origin for A block
+					host_origin[0] = float_size * blk_dim * k;
+					host_origin[1] = blk_dim * i;
+					host_origin[2] = 0;
+
+					// Region of A block
+					if (k == blk_cnt - 1) {
+						region[0] = float_size * leftover;
+					}
+					else {
+						region[0] = float_size * blk_dim;
+					}
+					region[1] = ch;
+
+					// Copy A block into buffer
+					err = clEnqueueWriteBufferRect(commands, d_A, CL_TRUE, buffer_origin, host_origin, region, buffer_row_pitch, 0, host_row_pitch, 0, h_A, 0, NULL, NULL);
+
+					if (err != CL_SUCCESS) {
+						printf("Error: Failed to write A block into buffer. %d\n", err);
+						exit(1);
+					}
+					
+					// Host origin for B block
+					host_origin[0] = float_size * blk_dim * j;
+					host_origin[1] = blk_dim * k;
+					host_origin[2] = 0;
+
+					// Region of B block
+					region[0] = float_size * cw;
+					if (k == blk_cnt - 1) {
+						region[1] = leftover;
+					}
+					else {
+						region[1] = blk_dim;
+					}
+
+					// Copy B block into buffer
+					err = clEnqueueWriteBufferRect(commands, d_B, CL_TRUE, buffer_origin, host_origin, region, buffer_row_pitch, 0, host_row_pitch, 0, h_B, 0, NULL, NULL);
+
+					if (err != CL_SUCCESS) {
+						printf("Error: Failed to write B block into buffer. %d\n", err);
+						exit(1);
+					}
+
+					// Set kernel arguments and launch compute
+					err = clSetKernelArg(kernels[2], 0, sizeof(cl_mem), (void *)&d_A);
+					err |= clSetKernelArg(kernels[2], 1, sizeof(cl_mem), (void *)&d_B);
+					err |= clSetKernelArg(kernels[2], 2, sizeof(cl_mem), (void *)&d_C);
+					//err |= clSetKernelArg(kernels[2], 3, sizeof(float) * tileSize * tileSize, NULL);
+					//err |= clSetKernelArg(kernels[2], 4, sizeof(float) * tileSize * tileSize, NULL);
+					err |= clSetKernelArg(kernels[2], 3, sizeof(int), (void *)&blk_dim);
+					//err |= clSetKernelArg(kernels[2], 6, sizeof(int), (void *)&tileSize);
+					//err |= clSetKernelArg(kernels[2], 7, sizeof(int), (void *)&tileNum);
+					//err |= clSetKernelArg(kernels[2], 8, sizeof(int), (void *)&workload);
+					//err |= clSetKernelArg(kernels[2], 9, sizeof(int), (void *)&rts);
+
+					if (err != CL_SUCCESS) {
+						printf("Error: Failed to set compute kernel arguments. %d\n", err);
+						exit(1);
+					}
+
+					err = clEnqueueNDRangeKernel(commands, kernels[2], 2, NULL, globalWorkSize, NULL, 0, NULL, NULL);
+
+					if (err != CL_SUCCESS) {
+						printf("Error: Failed to execute compute kernel. %d\n", err);
+						exit(1);
+					}
+
+					// Host origin for C block
+					host_origin[0] = 0;
+					host_origin[1] = 0;
+					host_origin[2] = k;
+
+					printf("C host_origin: %zu\n", host_origin[2] * host_slice_pitch);
+					
+					// Region of C block
+					region[0] = float_size * blk_dim;
+					region[1] = blk_dim;
+
+					// Retrieve C block from buffer
+					err = clEnqueueReadBufferRect(commands, d_C, CL_TRUE, buffer_origin, host_origin, region, buffer_row_pitch, 0, 0, host_slice_pitch, mid_blks, 0, NULL, NULL);
+
+					//DEBUG
+						printf("\n--mid_blks--\n");
+						int m;
+						for (m = 0; m < blk_size * 2; m++) {
+							printf("%f ", mid_blks[m]);
+						}
+						printf("\n");
+
+					if (err != CL_SUCCESS) {
+						printf("Error: Failed to read C block from buffer. %d\n", err);
+						exit(1);
+					}
+				}
+				
+				// Finished one C block, now accumulate
+				for (k = 1; k < blk_cnt; k++) {
+					for (l = 0; l < blk_size; l++) {
+						mid_blks[l] += mid_blks[k * blk_size + l];
+					}
+				}
+
+				// C block result stored in the first block of mid_blks
+				int ci = blk_dim * i;
+				int cj = blk_dim * j;
+				int ti, tj;
+
+				for (ti = 0; ti < ch; ti++) {
+					for (tj = 0; tj < cw; tj++) {
+						h_C[(ci + ti) * NDIM + cj + tj] = mid_blks[ti * blk_dim + tj];
+					}
+				}
 			}
-
-			/* Retrieve result from device */
-			err = clEnqueueReadBuffer(commands, d_C, CL_TRUE, 0, sizeof(float) * m_size, h_C, 0, NULL, NULL);
-
-			if (err != CL_SUCCESS) {
-				printf("Error: Failed to read output array. %d\n", err);
-				exit(1);
-			}
-
-			// DEBUG
-			clEnqueueReadBuffer(commands, d_A, CL_TRUE, 0, sizeof(float) * m_size, h_A, 0, NULL, NULL);
-			clEnqueueReadBuffer(commands, d_B, CL_TRUE, 0, sizeof(float) * m_size, h_B, 0, NULL, NULL);
 		}
 
+		free(mid_blks);
 	}
 
 	timer_stop(1); // DEBUG
