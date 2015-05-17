@@ -3,6 +3,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#include <math.h>
+#include <string.h>
 #include <CL/opencl.h>
 
 #define USE_GPU				0
@@ -10,6 +12,9 @@
 
 #define MAX_SOURCE_SIZE		0x100000
 #define KCNT				2
+
+#define GLOBAL_WORK_SIZE	32
+#define LOCAL_WORK_SIZE		32
 
 #define DATA_DIM			2
 #define DEFAULT_ITERATION	1024
@@ -220,8 +225,10 @@ int main(int argc, char** argv)
     clock_gettime(CLOCK_MONOTONIC, &start);
     
 	// Run Kmeans algorithm
-	//kmeans(iteration_n, class_n, data_n, (Point*)centroids, (Point*)data, partitioned);
-    
+	int my_data_n = ceil((double)data_n / (double)GLOBAL_WORK_SIZE);
+	
+	size_t globalWorkSize, localWorkSize;
+
 	if (!USE_GPU) {
 		/******************** CPU ********************/
 
@@ -235,6 +242,42 @@ int main(int argc, char** argv)
 			exit(1);
 		}
 
+		// Set work sizes (all global work items are in a single work group)
+		globalWorkSize = GLOBAL_WORK_SIZE;
+		localWorkSize = GLOBAL_WORK_SIZE;
+
+		// Set kernel arguments
+		err = clSetKernelArg(kernels[0], 0, sizeof(int), (void*) &iteration_n);
+		err |= clSetKernelArg(kernels[0], 1, sizeof(int), (void*) &class_n);
+		err |= clSetKernelArg(kernels[0], 2, sizeof(int), (void*) &data_n);
+		err |= clSetKernelArg(kernels[0], 3, sizeof(cl_mem), (void*) &d_centroids);
+		err |= clSetKernelArg(kernels[0], 4, sizeof(cl_mem), (void*) &d_data);
+		err |= clSetKernelArg(kernels[0], 5, sizeof(cl_mem), (void*) &d_partitioned);
+		err |= clSetKernelArg(kernels[0], 6, sizeof(int) * class_n, NULL);
+		err |= clSetKernelArg(kernels[0], 7, sizeof(int), (void*) &my_data_n);
+
+		if (err != CL_SUCCESS) {
+			printf("Error: Failed to set kernel arguments. %d\n", err);
+			exit(1);
+		}
+
+		// Execute kernel
+		err = clEnqueueNDRangeKernel(commands, kernels[0], 1, NULL, &globalWorkSize, &localWorkSize, 0, NULL, NULL);
+
+		if (err != CL_SUCCESS) {
+			printf("Error: Failed to execute kernel. %d\n", err);
+			exit(1);
+		}
+
+		// Read data back to host memory
+		err = clEnqueueReadBuffer(commands, d_centroids, CL_TRUE, 0, sizeof(float) * DATA_DIM * class_n, centroids, 0, NULL, NULL);
+		err |= clEnqueueReadBuffer(commands, d_data, CL_TRUE, 0, sizeof(float) * DATA_DIM * data_n, data, 0, NULL, NULL);
+		err |= clEnqueueReadBuffer(commands, d_partitioned, CL_TRUE, 0, sizeof(int) * data_n, partitioned, 0, NULL, NULL);
+
+		if (err != CL_SUCCESS) {
+			printf("Error: Failed to execute kernel. %d\n", err);
+			exit(1);
+		}
 	}
 	else {
 		/******************** GPU ********************/
@@ -267,9 +310,9 @@ int main(int argc, char** argv)
     free(partitioned);
 
 	/* Cleanup */
-	clReleaseMemObject(d_A);
-	clReleaseMemObject(d_B);
-	clReleaseMemObject(d_C);
+	clReleaseMemObject(d_centroids);
+	clReleaseMemObject(d_data);
+	clReleaseMemObject(d_partitioned);
 
 	for (i = 0; i < KCNT; i++) {
 		clReleaseProgram(programs[i]);

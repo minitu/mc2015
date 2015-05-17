@@ -3,58 +3,31 @@ CXX=g++
 CXXFLAGS=-Wall
 
 
-LIBS = -lrt
+LIBS = -lrt -lm -lOpenCL
 LDFLAGS = ${LIBS}
 
 
-all: seq pthread
+all: kmeans
 
-.PHONY: all seq pthread clean test
+.PHONY: all clean
 
-
-seq: kmeans_seq
-
-kmeans_seq: kmeans_seq.o kmeans_main.o
+kmeans: kmeans_main.o
 	${CXX} $^ -o $@ ${LDFLAGS}
 
-
-pthread: kmeans_pthread
-
-kmeans_pthread: kmeans_pthread.o kmeans_main.o
-	${CXX} $^ -o $@ ${LDFLAGS} -lpthread -lm
-
-run_all:
-	./gen_data.py centroid 64 centroid.point
-	./gen_data.py data 65536 data.point 64
-	thorq --add kmeans_seq centroid.point data.point result_seq.class final_centroid_seq.point 1024
-	thorq --add kmeans_pthread centroid.point data.point result_pthread.class final_centroid_pthread.point 1024
-
-run_seq:
-	./gen_data.py centroid 64 centroid.point
-	./gen_data.py data 65536 data.point 64
-	thorq --add kmeans_seq centroid.point data.point result_seq.class final_centroid_seq.point 1024
-
 run:
-	./gen_data.py centroid 64 centroid.point
-	./gen_data.py data 65536 data.point 64
-	thorq --add kmeans_pthread centroid.point data.point result_pthread.class final_centroid_pthread.point 1024
+	./gen_data.py centroid 16 centroid.point
+	./gen_data.py data 1048576 data.point 16
+	thorq --add --mode single --device gpu ./kmeans centroid.point data.point result.class final_centroid.point 1024
 	
-gen_data:
-	./gen_data.py centroid 64 centroid.point
-	./gen_data.py data 65536 data.point 64
+data:
+	./gen_data.py centroid 16 centroid.point
+	./gen_data.py data 65536 data.point 16
 	
-local_seq:
-	./kmeans_seq centroid.point data.point result_seq.class final_centroid_seq.point 1024
+test:
+	thorq --add --mode single --device gpu --timeout 100 ./kmeans centroid.point data.point result.class final_centroid.point 1024
 
-local_pthread:
-	./kmeans_pthread centroid.point data.point result_pthread.class final_centroid_pthread.point 1024
-
-graph_all:
-	./plot_data.py result final_centroid_seq.point data.point result_seq.class result_seq.png
-	./plot_data.py result final_centroid_pthread.point data.point result_pthread.class result_pthread.png
-
-graph_pthread:
-	./plot_data.py result final_centroid_pthread.point data.point result_pthread.class result_pthread.png
+graph:
+	./plot_data.py result final_centroid.point data.point result.class result.png
 
 clean:
-	rm -f kmeans_seq kmeans_pthread kmeans_main.o kmeans_seq.o kmeans_pthread.o centroid.point data.point final_centroid.point final_centroid_seq.point final_centroid_pthread.point result.class result_seq.class result_pthread.class task*
+	rm -f kmeans kmeans_main.o centroid.point data.point final_centroid.point result.class task*

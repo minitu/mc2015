@@ -1,4 +1,4 @@
-__kernel void kmeans_cpu(
+__kernel void kmeans_gpu(
 		const int iteration_n,
 		const int class_n,
 		const int data_n,
