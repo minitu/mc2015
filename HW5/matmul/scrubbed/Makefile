@@ -14,10 +14,13 @@ clean:
 	rm -rf $(TARGET) $(OBJS) task*
 
 run: $(TARGET)
-	thorq --add --mode single --device gpu ./$(TARGET)
+	thorq --add --mode single --device gpu --timeout 100 ./$(TARGET)
 
 run_d: $(TARGET)
 	thorq --add --mode single --device gpu --timeout 100 ./$(TARGET) -d
+
+run_p: $(TARGET)
+	thorq --add --mode single --device gpu --timeout 100 ./$(TARGET) -p
 
 run_dp: $(TARGET)
 	thorq --add --mode single --device gpu --timeout 100 ./$(TARGET) -d -p
