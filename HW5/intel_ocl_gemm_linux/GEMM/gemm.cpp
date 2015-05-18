@@ -221,6 +221,8 @@ void gemm (
     cout << "Using alpha = " << alpha << " and beta = " << beta << "\n";
     cl_int cl_size = static_cast<int>(size);  // kernel requires int value
     cl_int ldabc = static_cast<int>(stride);  // kernel requires int value
+	
+	cout << "ldabc: " << ldabc << "\n";
 
     // -----------------------------------------------------------------------
     // Setting kernel arguments

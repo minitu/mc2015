@@ -16,8 +16,8 @@ clean:
 run: $(TARGET)
 	thorq --add --mode single --device gpu ./$(TARGET)
 
-run_d: $(TARGET)
-	thorq --add --mode single --device gpu --timeout 100 ./$(TARGET) -d
+test: $(TARGET)
+	thorq --add --mode single --device gpu --timeout 100 ./$(TARGET)
 
-run_dp: $(TARGET)
-	thorq --add --mode single --device gpu --timeout 100 ./$(TARGET) -d -p
+testp: $(TARGET)
+	thorq --add --mode single --device gpu --timeout 100 ./$(TARGET) -p

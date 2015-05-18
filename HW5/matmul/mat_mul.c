@@ -8,24 +8,29 @@
 #include <string.h>
 #include "timers.h"
 
+// Set if debug
+#define DEBUG				1
+
 // 0 for CPU, 1 for GPU
-#define USE_GPU				0
+#define USE_GPU				1
+
 // Maximum kernel source code size
 #define MAX_SOURCE_SIZE		0x100000
+
 // Number of different kernels (init, compute)
 #define KCNT				2
+
 // Matrix dimension
-#define NDIM				16
-// Tile dimension, equal to work group dimension.
+#define NDIM				10000
+
+// Tile dimension, equal to dimension of work group.
 // Should not exceed 32 on CPU and 16 on GPU,
 // and should be a divisor of NDIM.
-#define TDIM				4
-// Maximum workload is equal to tile size.
-#define WORKLOAD			4
+#define TDIM				16
+
 // Minimum function
 #define MIN(x,y)			((x < y) ? (x) : (y))
 
-int debug = 0;
 int print_matrix = 0;
 
 void print_mat( float* mat )
@@ -42,10 +47,9 @@ void print_mat( float* mat )
 
 void print_help(const char* prog_name)
 {
-	printf("Usage: %s [-dph]\n", prog_name );
+	printf("Usage: %s [-ph]\n", prog_name );
 	printf("\n");
 	printf("OPTIONS\n");
-	printf("  -d : print debug info.\n");
 	printf("  -p : print matrix data.\n");
 	printf("  -h : print this page.\n");
 }
@@ -54,15 +58,10 @@ void parse_opt(int argc, char** argv)
 {
 	int opt;
 
-	while( (opt = getopt(argc, argv, "dph:")) != -1 )
+	while( (opt = getopt(argc, argv, "ph:")) != -1 )
 	{
 		switch(opt)
 		{
-			case 'd':
-				// print debug info
-				debug = 1;
-				break;
-
 			case 'p':
 				// print matrix data
 				print_matrix = 1;
@@ -82,7 +81,6 @@ int main(int argc, char** argv)
 {
 	parse_opt( argc, argv );
 
-
 	/* OpenCL variables */
 	int err;
 
@@ -95,12 +93,6 @@ int main(int argc, char** argv)
 	cl_mem d_A;
 	cl_mem d_B;
 	cl_mem d_C;
-
-	/* Allocate host memory for matrices */
-	unsigned long m_size = (unsigned long)NDIM * (unsigned long)NDIM; // Total matrix size
-	float* h_A = (float*) malloc(sizeof(float) * m_size);
-	float* h_B = (float*) malloc(sizeof(float) * m_size);
-	float* h_C = (float*) malloc(sizeof(float) * m_size);
 
 	/* Gather platform data */
 	cl_uint dev_cnt = 0;
@@ -119,7 +111,7 @@ int main(int argc, char** argv)
 		CL_PLATFORM_NAME,
 		CL_PLATFORM_VENDOR };
 
-	if (debug)
+	if (DEBUG)
 		printf("*** Platform Information***\n");
 
 	for (i = 0; i < 4; i++) {
@@ -135,7 +127,7 @@ int main(int argc, char** argv)
 			return EXIT_FAILURE;
 		}
 
-		if (debug)
+		if (DEBUG)
 			printf("%s\n", platform_info);
 
 		free(platform_info);
@@ -198,8 +190,23 @@ int main(int argc, char** argv)
 	}
 
 	/* Build the program executables */
+	char define_str[10] = "-DTDIM=";
+	char tdim_str[10];
+	sprintf(tdim_str, "%d", TDIM);
+	char *build_options = malloc(sizeof(char) * 100);
+	build_options = strcat(define_str, tdim_str);
+	if (DEBUG) {
+		printf("*** Kernel Build Options ***\n");
+		printf("%s\n", build_options);
+	}
+
 	for (i = 0; i < KCNT; i++) {
-		err = clBuildProgram(programs[i], 0, NULL, NULL, NULL, NULL);
+		if (i == 0) {
+			err = clBuildProgram(programs[i], 0, NULL, NULL, NULL, NULL);
+		}
+		else {
+			err = clBuildProgram(programs[i], 0, NULL, build_options, NULL, NULL);
+		}
 
 		if (err != CL_SUCCESS) {
 			size_t len;
@@ -225,42 +232,31 @@ int main(int argc, char** argv)
 		}
 	}
 
-	/* Find out maximum work group size & maximum work item sizes */
+	/* Query for device specific info */
 	size_t max_work_group_size;
-	size_t max_work_item_sizes[3];
 
 	err = clGetDeviceInfo(device_id, CL_DEVICE_MAX_WORK_GROUP_SIZE, sizeof(size_t), &max_work_group_size, NULL);
 
 	if (err != CL_SUCCESS) {
-		printf("Error: Failed to get CL_DEVICE_MAX_WORK_GROUP_SIZE.\n");
+		printf("Error: Failed to get device info.\n");
 		exit(1);
 	}
 
-	err = clGetDeviceInfo(device_id, CL_DEVICE_MAX_WORK_ITEM_SIZES, sizeof(max_work_item_sizes), &max_work_item_sizes, NULL);
-
-	if (err != CL_SUCCESS) {
-		printf("Error: Failed to get CL_DEVICE_MAX_WORK_ITEM_SIZES.\n");
-		exit(1);
-	}
-
-	if (debug) {
-		printf("*** Work Group Size Information ***\n");
+	if (DEBUG) {
+		printf("*** Device Information ***\n");
 		printf("Maximum work group size: %zu\n", max_work_group_size);
 	}
 
-	timer_start(1);
+	/* Allocate host memory for matrices */
+	unsigned long m_size = (unsigned long)NDIM * (unsigned long)NDIM; // Total matrix size
+	float* h_A = (float*) malloc(sizeof(float) * m_size);
+	float* h_B = (float*) malloc(sizeof(float) * m_size);
+	float* h_C = (float*) malloc(sizeof(float) * m_size);
 
 	/* Create buffers for matrices in device global memory */
-	if (!USE_GPU) {
-		d_A = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(float) * m_size, h_A, &err);
-		d_B = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(float) * m_size, h_B, &err);;
-		d_C = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(float) * m_size, h_C, &err);
-	}
-	else {
-		d_A = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(float) * m_size, h_A, &err);
-		d_B = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(float) * m_size, h_B, &err);;
-		d_C = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(float) * m_size, h_C, &err);
-	}
+	d_A = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(float) * m_size, h_A, &err);
+	d_B = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(float) * m_size, h_B, &err);;
+	d_C = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(float) * m_size, h_C, &err);
 
 	if (err != CL_SUCCESS) {
 		printf("Error: Failed to allocate device memory.\n");
@@ -268,25 +264,17 @@ int main(int argc, char** argv)
 	}
 
 	// Kernel variables
-	size_t initLocalWorkSize[2], initGlobalWorkSize[2];
-	size_t localWorkSize[2], globalWorkSize[2];
+	size_t initGlobalWorkSize[2];
+	size_t globalWorkSize[2], localWorkSize[2];
 	int ndim = NDIM;
-	int tileSize = TDIM;
-	int tileNum = ceil((double)NDIM / (double)tileSize);
-	int workload = WORKLOAD;
-	int rts = tileSize / workload;
 	float startNum = 0.0f + 1;
 
 	// Set work sizes
 	for (i = 0; i < 2; i++) {
-		initLocalWorkSize[i] = tileSize;
-		initGlobalWorkSize[i] = ndim;
+		initGlobalWorkSize[i] = NDIM;
+		globalWorkSize[i] = NDIM;
+		localWorkSize[i] = TDIM;
 	}
-
-	localWorkSize[0] = tileSize;
-	localWorkSize[1] = rts;
-	globalWorkSize[0] = ndim;
-	globalWorkSize[1] = ndim / workload;
 
 	/* Launch init */
 	err = clSetKernelArg(kernels[0], 0, sizeof(cl_mem), (void *)&d_A);
@@ -299,7 +287,7 @@ int main(int argc, char** argv)
 		exit(1);
 	}
 
-	err = clEnqueueNDRangeKernel(commands, kernels[0], 2, NULL, initGlobalWorkSize, initLocalWorkSize, 0, NULL, NULL);
+	err = clEnqueueNDRangeKernel(commands, kernels[0], 2, NULL, initGlobalWorkSize, NULL, 0, NULL, NULL);
 
 	if (err != CL_SUCCESS) {
 		printf("Error: Failed to execute init kernel. %d\n", err);
@@ -314,19 +302,16 @@ int main(int argc, char** argv)
 	err = clSetKernelArg(kernels[1], 0, sizeof(cl_mem), (void *)&d_A);
 	err |= clSetKernelArg(kernels[1], 1, sizeof(cl_mem), (void *)&d_B);
 	err |= clSetKernelArg(kernels[1], 2, sizeof(cl_mem), (void *)&d_C);
-	err |= clSetKernelArg(kernels[1], 3, sizeof(float) * tileSize * tileSize, NULL);
-	err |= clSetKernelArg(kernels[1], 4, sizeof(float) * tileSize * tileSize, NULL);
-	err |= clSetKernelArg(kernels[1], 5, sizeof(int), (void *)&ndim);
-	err |= clSetKernelArg(kernels[1], 6, sizeof(int), (void *)&tileSize);
-	err |= clSetKernelArg(kernels[1], 7, sizeof(int), (void *)&tileNum);
-	err |= clSetKernelArg(kernels[1], 8, sizeof(int), (void *)&workload);
-	err |= clSetKernelArg(kernels[1], 9, sizeof(int), (void *)&rts);
+	err |= clSetKernelArg(kernels[1], 3, sizeof(int), (void *)&ndim);
 
 	if (err != CL_SUCCESS) {
 		printf("Error: Failed to set compute kernel arguments. %d\n", err);
 		exit(1);
 	}
 
+	// Start timing
+	timer_start(1);
+	
 	err = clEnqueueNDRangeKernel(commands, kernels[1], 2, NULL, globalWorkSize, localWorkSize, 0, NULL, NULL);
 
 	if (err != CL_SUCCESS) {
@@ -342,6 +327,7 @@ int main(int argc, char** argv)
 		exit(1);
 	}
 
+	// End timing
 	timer_stop(1);
 
 	printf("Time elapsed : %lf sec\n", timer_read(1));
