@@ -11,7 +11,7 @@ all: kmeans
 
 .PHONY: all clean
 
-kmeans: kmeans_main.o
+kmeans: kmeans.o
 	${CXX} $^ -o $@ ${LDFLAGS}
 
 run:
@@ -20,8 +20,8 @@ run:
 	thorq --add --mode single --device gpu ./kmeans centroid.point data.point result.class final_centroid.point 1024
 	
 data:
-	./gen_data.py centroid 16 centroid.point
-	./gen_data.py data 65536 data.point 16
+	./gen_data.py centroid 64 centroid.point
+	./gen_data.py data 65536 data.point 64
 	
 test:
 	thorq --add --mode single --device gpu --timeout 100 ./kmeans centroid.point data.point result.class final_centroid.point 1024
@@ -29,5 +29,8 @@ test:
 graph:
 	./plot_data.py result final_centroid.point data.point result.class result.png
 
+clear:
+	rm -f task*
+
 clean:
-	rm -f kmeans kmeans_main.o centroid.point data.point final_centroid.point result.class task* result*.png
+	rm -f kmeans kmeans.o centroid.point data.point final_centroid.point result.class task* result*.png

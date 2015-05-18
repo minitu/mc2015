@@ -30,8 +30,6 @@ run_all:
 	thorq --add kmeans_pthread centroid.point data.point result_pthread.class final_centroid_pthread.point 1024
 
 run_seq:
-	./gen_data.py centroid 64 centroid.point
-	./gen_data.py data 65536 data.point 64
 	thorq --add kmeans_seq centroid.point data.point result_seq.class final_centroid_seq.point 1024
 
 run:
@@ -52,6 +50,9 @@ local_pthread:
 graph_all:
 	./plot_data.py result final_centroid_seq.point data.point result_seq.class result_seq.png
 	./plot_data.py result final_centroid_pthread.point data.point result_pthread.class result_pthread.png
+
+graph_seq:
+	./plot_data.py result final_centroid_seq.point data.point result_seq.class result_seq.png
 
 graph_pthread:
 	./plot_data.py result final_centroid_pthread.point data.point result_pthread.class result_pthread.png

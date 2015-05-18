@@ -1,4 +1,4 @@
-__kernel void kmeans_2(
+__kernel void kmeans_0(
 		const int class_n,
 		const int data_n,
 		__global float* centroids,
@@ -27,27 +27,33 @@ __kernel void kmeans_2(
 	barrier(CLK_LOCAL_MEM_FENCE);
 
 	// Each work-item does the below independently
+	i = local_id * data_n_wi; // Local index
+	
 	for (data_i = group_id * data_n_wg + local_id * data_n_wi; data_i < group_id * data_n_wg + (local_id + 1) * data_n_wi; data_i++) {
-		data_wg[2 * data_i] = data[2 * data_i];
-		data_wg[2 * data_i + 1] = data[2 * data_i + 1];
-		partitioned_wg[data_i] = partitioned[data_i];
+		
+		// Copy data from global to local memory
+		data_wg[2 * i] = data[2 * data_i];
+		data_wg[2 * i + 1] = data[2 * data_i + 1];
+		partitioned_wg[i] = partitioned[data_i];
 
 		// Assignment
 		float min_dist = DBL_MAX;
 
 		for (class_i = 0; class_i < class_n; class_i++) {
-			x = data_wg[2 * data_i] - centroids_wg[2 * class_i];
-			y = data_wg[2 * data_i + 1] - centroids_wg[2 * class_i + 1];
+			x = data_wg[2 * i] - centroids_wg[2 * class_i];
+			y = data_wg[2 * i + 1] - centroids_wg[2 * class_i + 1];
 
 			float dist = x * x + y * y;
 
 			if (dist < min_dist) {
-				partitioned_wg[data_i] = class_i;
+				partitioned_wg[i] = class_i;
 				min_dist = dist;
 			}
 		}
 
 		// Copy data back to global memory
-		partitioned[data_i] = partitioned_wg[data_i];
+		partitioned[data_i] = partitioned_wg[i];
+
+		i++; // Increment local index
 	}
 }

@@ -11,10 +11,10 @@
 #define DEBUG				1
 
 #define MAX_SOURCE_SIZE		0x100000
-#define KCNT				3
+#define KCNT				2
 
 #define GLOBAL_WORK_SIZE	1024
-#define LOCAL_WORK_SIZE		32
+#define LOCAL_WORK_SIZE		256
 
 #define DATA_DIM			2
 #define DEFAULT_ITERATION	1024
@@ -149,7 +149,6 @@ int main(int argc, char** argv)
 
 	strcpy(fileName[0], "./kernel0.cl");
 	strcpy(fileName[1], "./kernel1.cl");
-	strcpy(fileName[2], "./kernel2.cl");
 
 	for (i = 0; i < KCNT; i++) {
 		fp = fopen(fileName[i], "r");
@@ -192,7 +191,6 @@ int main(int argc, char** argv)
 	for (i = 0; i < KCNT; i++) {
 		if (i == 0) strcpy(kernelName, "kmeans_0");
 		else if (i == 1) strcpy(kernelName, "kmeans_1");
-		else if (i == 2) strcpy(kernelName, "kmeans_2");
 
 		kernels[i] = clCreateKernel(programs[i], kernelName, &err);
 		if (!kernels[i] || err != CL_SUCCESS) {
@@ -204,26 +202,23 @@ int main(int argc, char** argv)
 	// Find out maximum work group size & maximum work item sizes
 	size_t max_work_group_size;
 	size_t max_work_item_sizes[3];
+	cl_ulong local_mem_size;
 
 	err = clGetDeviceInfo(device_id, CL_DEVICE_MAX_WORK_GROUP_SIZE, sizeof(size_t), &max_work_group_size, NULL);
+	err |= clGetDeviceInfo(device_id, CL_DEVICE_MAX_WORK_ITEM_SIZES, sizeof(max_work_item_sizes), &max_work_item_sizes, NULL);
+	err |= clGetDeviceInfo(device_id, CL_DEVICE_LOCAL_MEM_SIZE, sizeof(cl_ulong), &local_mem_size, NULL);
 
 	if (err != CL_SUCCESS) {
-		printf("Error: Failed to get CL_DEVICE_MAX_WORK_GROUP_SIZE.\n");
-		exit(1);
-	}
-
-	err = clGetDeviceInfo(device_id, CL_DEVICE_MAX_WORK_ITEM_SIZES, sizeof(max_work_item_sizes), &max_work_item_sizes, NULL);
-
-	if (err != CL_SUCCESS) {
-		printf("Error: Failed to get CL_DEVICE_MAX_WORK_ITEM_SIZES.\n");
+		printf("Error: Failed to get device info. %d\n", err);
 		exit(1);
 	}
 
 	if (DEBUG) {
-		printf("\n*** Work Group Information ***\n");
-		printf("max_work_group_size: %zu\n", max_work_group_size);
-		printf("max_work_item_sizes[0]: %zu\n", max_work_item_sizes[0]);
-		printf("max_work_item_sizes[1]: %zu\n", max_work_item_sizes[1]);
+		printf("\n*** Device Information ***\n");
+		printf("Maximum work group size: %zu\n", max_work_group_size);
+		printf("Maximum work item size 0: %zu\n", max_work_item_sizes[0]);
+		printf("Maximum work item size 1: %zu\n", max_work_item_sizes[1]);
+		printf("Local memory size: %lu\n", local_mem_size);
 	}
 
 	// Set work sizes
@@ -235,21 +230,32 @@ int main(int argc, char** argv)
 	int data_n_wg = data_n_wi * LOCAL_WORK_SIZE;
 
 	if (DEBUG) {
-		printf("\n*** Work Size Inormation ***\n");
+		printf("\n*** Data Size Information ***\n");
 		printf("Per work-item: %d\n", data_n_wi);
 		printf("Per work-group: %d\n", data_n_wg);
 	}
+
+	// Memory for accumulation
+	float* acc_centroids = (float*) malloc(sizeof(float) * DATA_DIM * class_n * GLOBAL_WORK_SIZE);
+	int* acc_count = (int*) malloc(sizeof(int) * class_n * GLOBAL_WORK_SIZE);
+
+	cl_mem d_acc_centroids;
+	cl_mem d_acc_count;
 
 	// Allocate buffers
 	if (!USE_GPU) {
 		d_centroids = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(float) * DATA_DIM * class_n, centroids, &err);
 		d_data = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(float) * DATA_DIM * data_n, data, &err);
 		d_partitioned = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(int) * data_n, partitioned, &err);
+		d_acc_centroids = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(float) * DATA_DIM * class_n * GLOBAL_WORK_SIZE, acc_centroids, &err);
+		d_acc_count = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(int) * class_n * GLOBAL_WORK_SIZE, acc_count, &err);
 	}
 	else {
 		d_centroids = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(float) * DATA_DIM * class_n, centroids, &err);
 		d_data = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(float) * DATA_DIM * data_n, data, &err);
 		d_partitioned = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(int) * data_n, partitioned, &err);
+		d_acc_centroids = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(float) * DATA_DIM * class_n * GLOBAL_WORK_SIZE, acc_centroids, &err);
+		d_acc_count = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(int) * class_n * GLOBAL_WORK_SIZE, acc_count, &err);
 	}
 
 	if (err != CL_SUCCESS) {
@@ -266,10 +272,6 @@ int main(int argc, char** argv)
 	// Iteratively execute the kernels
 	for (i = 0; i < iteration_n; i++) {
 		
-		if (DEBUG) {
-			printf("Iteration %d:\n", i);
-		}
-
 		// Kernel 0
 
 		// Set kernel arguments
@@ -281,11 +283,9 @@ int main(int argc, char** argv)
 		err |= clSetKernelArg(kernels[0], 5, sizeof(int), (void*) &data_n_wi);
 		err |= clSetKernelArg(kernels[0], 6, sizeof(int), (void*) &data_n_wg);
 		err |= clSetKernelArg(kernels[0], 7, sizeof(float) * DATA_DIM * class_n, NULL);
-		err |= clSetKernelArg(kernels[0], 8, sizeof(float) * DATA_DIM * data_n_wg, NULL);
-		err |= clSetKernelArg(kernels[0], 9, sizeof(int) * data_n_wg, NULL);
 
 		if (err != CL_SUCCESS) {
-			printf("Error: Failed to set kernel arguments. %d\n", err);
+			printf("Error: Failed to set kernel 0 arguments. %d\n", err);
 			exit(1);
 		}
 
@@ -293,28 +293,114 @@ int main(int argc, char** argv)
 		err = clEnqueueNDRangeKernel(commands, kernels[0], 1, NULL, &globalWorkSize, &localWorkSize, 0, NULL, NULL);
 
 		if (err != CL_SUCCESS) {
-			printf("Error: Failed to execute kernel. %d\n", err);
+			printf("Error: Failed to execute kernel 0. %d\n", err);
 			exit(1);
 		}
 
-		// Read data back to host memory
-		/*
-		err = clEnqueueReadBuffer(commands, d_centroids, CL_TRUE, 0, sizeof(float) * DATA_DIM * class_n, centroids, 0, NULL, NULL);
-		err |= clEnqueueReadBuffer(commands, d_data, CL_TRUE, 0, sizeof(float) * DATA_DIM * data_n, data, 0, NULL, NULL);
-		err |= clEnqueueReadBuffer(commands, d_partitioned, CL_TRUE, 0, sizeof(int) * data_n, partitioned, 0, NULL, NULL);
+		// Kernel 1
+
+		// Set kernel arguments
+		err = clSetKernelArg(kernels[1], 0, sizeof(int), (void*) &class_n);
+		err |= clSetKernelArg(kernels[1], 1, sizeof(int), (void*) &data_n);
+		err |= clSetKernelArg(kernels[1], 2, sizeof(cl_mem), (void*) &d_centroids);
+		err |= clSetKernelArg(kernels[1], 3, sizeof(cl_mem), (void*) &d_data);
+		err |= clSetKernelArg(kernels[1], 4, sizeof(cl_mem), (void*) &d_partitioned);
+		err |= clSetKernelArg(kernels[1], 5, sizeof(int), (void*) &data_n_wi);
+		err |= clSetKernelArg(kernels[1], 6, sizeof(int), (void*) &data_n_wg);
+		err |= clSetKernelArg(kernels[1], 7, sizeof(cl_mem), (void*) &d_acc_centroids);
+		err |= clSetKernelArg(kernels[1], 8, sizeof(cl_mem), (void*) &d_acc_count);
+
+		if (err != CL_SUCCESS) {
+			printf("Error: Failed to set kernel arguments. %d\n", err);
+			exit(1);
+		}
+
+		// Execute kernel
+		err = clEnqueueNDRangeKernel(commands, kernels[1], 1, NULL, &globalWorkSize, &localWorkSize, 0, NULL, NULL);
 
 		if (err != CL_SUCCESS) {
 			printf("Error: Failed to execute kernel. %d\n", err);
 			exit(1);
 		}
+
+		// Read accumulation data back to host memory
+		err = clEnqueueReadBuffer(commands, d_acc_centroids, CL_TRUE, 0, sizeof(float) * DATA_DIM * class_n * GLOBAL_WORK_SIZE, acc_centroids, 0, NULL, NULL);
+		err |= clEnqueueReadBuffer(commands, d_acc_count, CL_TRUE, 0, sizeof(int) * class_n * GLOBAL_WORK_SIZE, acc_count, 0, NULL, NULL);
+
+		if (err != CL_SUCCESS) {
+			printf("Error: Failed to read accumulation data. %d\n", err);
+			exit(1);
+		}
+
+		// DEBUG
+		/*
+		if (i == 0) {
+		int m;
+		for (m = 0; m < DATA_DIM * class_n; m++) {
+			printf("%f ", acc_centroids[DATA_DIM * class_n * (GLOBAL_WORK_SIZE - 1) + m]);
+		}
+		printf("\n");
+		for (m = 0; m < class_n; m++) {
+			printf("%d ", acc_count[class_n * (GLOBAL_WORK_SIZE - 1) + m]);
+		}
+		printf("\n");
+		}
 		*/
 
+
+		// Accumulate data & divide the sum with number of class for mean point
+		int j, k;
+		
+		for (j = 1; j < GLOBAL_WORK_SIZE; j++) {
+			for (k = 0; k < class_n; k++) {
+				acc_centroids[k] += acc_centroids[DATA_DIM * class_n * j + k];
+				acc_count[k] += acc_count[class_n * j + k];
+			}
+			for (k = class_n; k < DATA_DIM * class_n; k++) {
+				acc_centroids[k] += acc_centroids[DATA_DIM * class_n * j + k];
+			}
+		}
+
+
+		// DEBUG
+		/*
+		if (i == 0) {
+		int m;
+		for (m = 0; m < DATA_DIM * class_n; m++) {
+			printf("%f ", acc_centroids[m]);
+		}
+		printf("\n");
+		for (m = 0; m < class_n; m++) {
+			printf("%d ", acc_count[m]);
+		}
+		printf("\n");
+		*/
+
+		for (j = 0; j < class_n; j++) {
+			acc_centroids[2 * j] /= acc_count[j];
+			acc_centroids[2 * j + 1] /= acc_count[j];
+		}
+
+		// Store centroids back in device memory
+		err = clEnqueueWriteBuffer(commands, d_centroids, CL_TRUE, 0, sizeof(float) * DATA_DIM * class_n, acc_centroids, 0, NULL, NULL);
+
+		if (err != CL_SUCCESS) {
+			printf("Error: Failed to store centroids in device memory. %d\n", err);
+		}
 	}
+
+	// Read centroids and partitioned from device memory
+	err = clEnqueueReadBuffer(commands, d_centroids, CL_TRUE, 0, sizeof(float) * DATA_DIM * class_n, centroids, 0, NULL, NULL);
+	err = clEnqueueReadBuffer(commands, d_partitioned, CL_TRUE, 0, sizeof(int) * data_n, partitioned, 0, NULL, NULL);
 
 	clock_gettime(CLOCK_MONOTONIC, &end);
 
 	timespec_subtract(&spent, &end, &start);
 	printf("Time spent: %ld.%09ld\n", spent.tv_sec, spent.tv_nsec);
+
+	if (DEBUG) {
+		printf("\nWriting results...\n");
+	}
 
 	// Write classified result
 	io_file = fopen(argv[3], "wb");
@@ -331,15 +417,24 @@ int main(int argc, char** argv)
 		fclose(io_file);
 	}
 
+	if (DEBUG) {
+		printf("Cleaning up...\n");
+	}
 
 	// Cleanup
+	/* Segmentation fault occurs...
 	free(centroids);
 	free(data);
 	free(partitioned);
+	free(acc_centroids);
+	free(acc_count);
+	*/
 
 	clReleaseMemObject(d_centroids);
 	clReleaseMemObject(d_data);
 	clReleaseMemObject(d_partitioned);
+	clReleaseMemObject(d_acc_centroids);
+	clReleaseMemObject(d_acc_count);
 
 	for (i = 0; i < KCNT; i++) {
 		clReleaseProgram(programs[i]);
