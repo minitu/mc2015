@@ -7,7 +7,7 @@
 #include <string.h>
 #include <CL/opencl.h>
 
-#define USE_GPU				0
+#define USE_GPU				1
 #define DEBUG				1
 
 #define MAX_SOURCE_SIZE		0x100000
@@ -399,7 +399,7 @@ int main(int argc, char** argv)
 	printf("Time spent: %ld.%09ld\n", spent.tv_sec, spent.tv_nsec);
 
 	if (DEBUG) {
-		printf("\nWriting results...\n");
+		printf("\nWriting results...\n\n");
 	}
 
 	// Write classified result
@@ -418,7 +418,7 @@ int main(int argc, char** argv)
 	}
 
 	if (DEBUG) {
-		printf("Cleaning up...\n");
+		printf("Cleaning up...\n\n");
 	}
 
 	// Cleanup

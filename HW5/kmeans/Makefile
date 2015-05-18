@@ -20,8 +20,8 @@ run:
 	thorq --add --mode single --device gpu ./kmeans centroid.point data.point result.class final_centroid.point 1024
 	
 data:
-	./gen_data.py centroid 64 centroid.point
-	./gen_data.py data 65536 data.point 64
+	./gen_data.py centroid 16 centroid.point
+	./gen_data.py data 1048576 data.point 16
 	
 test:
 	thorq --add --mode single --device gpu --timeout 100 ./kmeans centroid.point data.point result.class final_centroid.point 1024
