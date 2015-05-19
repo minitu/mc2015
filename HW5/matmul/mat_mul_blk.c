@@ -8,13 +8,13 @@
 #include <string.h>
 #include "timers.h"
 
-#define USE_GPU				0
+#define USE_GPU				1
 
 #define MAX_SOURCE_SIZE		0x100000
 #define KCNT				3			/* Number of different kernels
 										 * (init, cpu, gpu) */
 
-#define NDIM				10000
+#define NDIM				100000
 #define BDIM				2
 #define GLOBAL_WORK_SIZE	NDIM
 #define LOCAL_WORK_SIZE		20			/* Should not exceed 32 on Chundoong CPU,

@@ -9,16 +9,10 @@
 #include "timers.h"
 
 // Set if debug
-#define DEBUG				1
+#define DEBUG				0
 
 // 0 for CPU, 1 for GPU
 #define USE_GPU				1
-
-// Maximum kernel source code size
-#define MAX_SOURCE_SIZE		0x100000
-
-// Number of different kernels (init, compute)
-#define KCNT				2
 
 // Matrix dimension
 #define NDIM				10000
@@ -27,6 +21,12 @@
 // Should not exceed 32 on CPU and 16 on GPU,
 // and should be a divisor of NDIM.
 #define TDIM				16
+
+// Maximum kernel source code size
+#define MAX_SOURCE_SIZE		0x100000
+
+// Number of different kernels (init, compute)
+#define KCNT				2
 
 // Minimum function
 #define MIN(x,y)			((x < y) ? (x) : (y))
@@ -326,6 +326,8 @@ int main(int argc, char** argv)
 		printf("Error: Failed to read output array. %d\n", err);
 		exit(1);
 	}
+
+	clFinish(commands);
 
 	// End timing
 	timer_stop(1);

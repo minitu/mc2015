@@ -8,7 +8,7 @@
 #include <CL/opencl.h>
 
 #define USE_GPU				1
-#define DEBUG				1
+#define DEBUG				0
 
 #define MAX_SOURCE_SIZE		0x100000
 #define KCNT				2
@@ -332,22 +332,6 @@ int main(int argc, char** argv)
 			exit(1);
 		}
 
-		// DEBUG
-		/*
-		if (i == 0) {
-		int m;
-		for (m = 0; m < DATA_DIM * class_n; m++) {
-			printf("%f ", acc_centroids[DATA_DIM * class_n * (GLOBAL_WORK_SIZE - 1) + m]);
-		}
-		printf("\n");
-		for (m = 0; m < class_n; m++) {
-			printf("%d ", acc_count[class_n * (GLOBAL_WORK_SIZE - 1) + m]);
-		}
-		printf("\n");
-		}
-		*/
-
-
 		// Accumulate data & divide the sum with number of class for mean point
 		int j, k;
 		
@@ -360,21 +344,6 @@ int main(int argc, char** argv)
 				acc_centroids[k] += acc_centroids[DATA_DIM * class_n * j + k];
 			}
 		}
-
-
-		// DEBUG
-		/*
-		if (i == 0) {
-		int m;
-		for (m = 0; m < DATA_DIM * class_n; m++) {
-			printf("%f ", acc_centroids[m]);
-		}
-		printf("\n");
-		for (m = 0; m < class_n; m++) {
-			printf("%d ", acc_count[m]);
-		}
-		printf("\n");
-		*/
 
 		for (j = 0; j < class_n; j++) {
 			acc_centroids[2 * j] /= acc_count[j];
@@ -422,15 +391,6 @@ int main(int argc, char** argv)
 	}
 
 	// Cleanup
-	/* Segmentation fault occurs...
-	free(centroids);
-	free(data);
-	free(partitioned);
-	free(acc_centroids);
-	free(acc_count);
-	*/
-
-	clReleaseMemObject(d_centroids);
 	clReleaseMemObject(d_data);
 	clReleaseMemObject(d_partitioned);
 	clReleaseMemObject(d_acc_centroids);
