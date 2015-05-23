@@ -3,13 +3,8 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include "timers.h"
-#ifdef _OPENMP
-#include <omp.h>
-#endif
 
-#define NDIM		2048
-#define BDIM		8
-#define	MIN(x,y)	((x < y) ? (x) : (y))
+#define NDIM    1024
 
 float a[NDIM][NDIM];
 float b[NDIM][NDIM];
@@ -18,33 +13,18 @@ float c[NDIM][NDIM];
 int print_matrix = 0;
 int validation = 0;
 
-//int tnum = 1;
-//int tsqr = 1;
-
 void mat_mul( float c[NDIM][NDIM], float a[NDIM][NDIM], float b[NDIM][NDIM] )
 {
-	int ii, jj, kk;
 	int i, j, k;
-	int iend, jend, kend;
-
+	
 	// C = AB
-#pragma omp parallel
+	for( i = 0; i < NDIM; i++ )
 	{
-#pragma omp for private(jj,kk,i,j,k) nowait
-		for(ii = 0; ii < NDIM; ii += BDIM) {
-			for (jj = 0; jj < NDIM; jj += BDIM) {
-				for (kk = 0; kk < NDIM; kk += BDIM) {
-					iend = MIN(ii + BDIM, NDIM);
-					for (i = ii; i < iend; i++) {
-						jend = MIN(jj + BDIM, NDIM);
-						for (j = jj; j < jend; j++) {
-							kend = MIN(kk + BDIM, NDIM);
-							for (k = kk; k < kend; k++) {
-								c[i][j] += a[i][k] * b[k][j];
-							}
-						}
-					}
-				}
+		for( j = 0; j < NDIM; j++ )
+		{
+			for( k = 0; k < NDIM; k++ )
+			{
+				c[i][j] += a[i][k] * b[k][j];
 			}
 		}
 	}
@@ -59,7 +39,7 @@ void check_mat_mul( float c[NDIM][NDIM], float a[NDIM][NDIM], float b[NDIM][NDIM
 	int validated = 1;
 
 	printf("Validating the result..\n");
-
+	
 	// C = AB
 	for( i = 0; i < NDIM; i++ )
 	{
@@ -118,21 +98,21 @@ void parse_opt(int argc, char** argv)
 	{
 		switch(opt)
 		{
-			case 'p':
-				// print matrix data.
-				print_matrix = 1;
-				break;
+		case 'p':
+			// print matrix data.
+			print_matrix = 1;
+			break;
 
-			case 'v':
-				// validation
-				validation = 1;
-				break;
+		case 'v':
+			// validation
+			validation = 1;
+			break;
 
-			case 'h':
-			default:
-				print_help(argv[0]);
-				exit(0);
-				break;
+		case 'h':
+		default:
+			print_help(argv[0]);
+			exit(0);
+			break;
 		}
 	}
 }
