@@ -8,7 +8,9 @@
 #endif
 
 #define NDIM		2048
-#define BDIM		8
+#define BDIM		256
+#define TNUM		64
+
 #define	MIN(x,y)	((x < y) ? (x) : (y))
 
 float a[NDIM][NDIM];
@@ -18,19 +20,21 @@ float c[NDIM][NDIM];
 int print_matrix = 0;
 int validation = 0;
 
-//int tnum = 1;
-//int tsqr = 1;
-
 void mat_mul( float c[NDIM][NDIM], float a[NDIM][NDIM], float b[NDIM][NDIM] )
 {
 	int ii, jj, kk;
 	int i, j, k;
 	int iend, jend, kend;
 
+#ifdef _OPENMP
+	omp_set_dynamic(0); // Disable dynamic teams
+	omp_set_num_threads(TNUM); // Set number of threads
+#endif
+
 	// C = AB
 #pragma omp parallel
 	{
-#pragma omp for private(jj,kk,i,j,k) nowait
+#pragma omp for collapse(2) private(kk,i,j,k)
 		for(ii = 0; ii < NDIM; ii += BDIM) {
 			for (jj = 0; jj < NDIM; jj += BDIM) {
 				for (kk = 0; kk < NDIM; kk += BDIM) {
