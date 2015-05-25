@@ -7,9 +7,9 @@
 #include <omp.h>
 #endif
 
-#define NDIM		2048
-#define BDIM		256
-#define TNUM		64
+#define NDIM		4096
+#define BDIM		512
+#define TNUM		32
 
 #define	MIN(x,y)	((x < y) ? (x) : (y))
 
@@ -31,21 +31,29 @@ void mat_mul( float c[NDIM][NDIM], float a[NDIM][NDIM], float b[NDIM][NDIM] )
 	omp_set_num_threads(TNUM); // Set number of threads
 #endif
 
-	// C = AB
-#pragma omp parallel
-	{
-#pragma omp for collapse(2) private(kk,i,j,k)
-		for(ii = 0; ii < NDIM; ii += BDIM) {
-			for (jj = 0; jj < NDIM; jj += BDIM) {
-				for (kk = 0; kk < NDIM; kk += BDIM) {
-					iend = MIN(ii + BDIM, NDIM);
-					for (i = ii; i < iend; i++) {
-						jend = MIN(jj + BDIM, NDIM);
-						for (j = jj; j < jend; j++) {
-							kend = MIN(kk + BDIM, NDIM);
-							for (k = kk; k < kend; k++) {
-								c[i][j] += a[i][k] * b[k][j];
-							}
+	/* Naive
+#pragma omp parallel for private(j,k)
+	for (i = 0; i < NDIM; i++) {
+		for (j = 0; j < NDIM; j++) {
+			for (k = 0; k < NDIM; k++) {
+				c[i][j] += a[i][k] * b[k][j];
+			}
+		}
+	}
+	*/
+
+	// Tiling
+#pragma omp parallel for collapse(2) private(kk,i,j,k)
+	for(ii = 0; ii < NDIM; ii += BDIM) {
+		for (jj = 0; jj < NDIM; jj += BDIM) {
+			for (kk = 0; kk < NDIM; kk += BDIM) {
+				iend = MIN(ii + BDIM, NDIM);
+				for (i = ii; i < iend; i++) {
+					jend = MIN(jj + BDIM, NDIM);
+					for (j = jj; j < jend; j++) {
+						kend = MIN(kk + BDIM, NDIM);
+						for (k = kk; k < kend; k++) {
+							c[i][j] += a[i][k] * b[k][j];
 						}
 					}
 				}

@@ -49,6 +49,12 @@ local_seq:
 local_omp:
 	./kmeans_omp centroid.point data.point result_omp.class final_centroid_omp.point 1024
 
+thor_seq:
+	thorq --add kmeans_seq centroid.point data.point result_seq.class final_centroid_seq.point 1024
+
+thor_omp:
+	thorq --add kmeans_omp centroid.point data.point result_omp.class final_centroid_omp.point 1024
+
 graph_seq:
 	./plot_data.py result final_centroid_seq.point data.point result_seq.class result_seq.png
 

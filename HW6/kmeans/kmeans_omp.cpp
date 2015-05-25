@@ -6,7 +6,7 @@
 #include <float.h>
 #include <omp.h>
 
-#define TNUM	64
+#define TNUM	32
 
 void kmeans(int iteration_n, int class_n, int data_n, Point* centroids, Point* data, int* partitioned)
 {
