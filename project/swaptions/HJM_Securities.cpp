@@ -29,10 +29,16 @@ tbb::cache_aligned_allocator<parm> memory_parm;
 #endif // TBB_VERSION
 #endif //ENABLE_THREADS
 
+#if defined(USE_CPU) || defined(USE_GPU)
+#include <CL/opencl.h>
+#define KCNT 1
+#endif
 
 #ifdef ENABLE_PARSEC_HOOKS
 #include <hooks.h>
 #endif
+
+#define DEBUG 1	// Set if you want debugging outputs
 
 int NUM_TRIALS = DEFAULT_NUM_TRIALS;
 int nThreads = 1;
@@ -256,6 +262,94 @@ int main(int argc, char *argv[])
 
 	clock_gettime(CLOCK_MONOTONIC, &start);
 
+#if defined(USE_CPU) || defined(USE_GPU)
+	// OpenCL
+	int err;
+
+	cl_device_id device_ids[100];
+	cl_context context;
+	cl_command_queue commands[100];
+	cl_program programs[KCNT];
+	cl_kernel kernels[KCNT];
+
+	// cl_mem
+	
+	// Gather platform data
+	cl_uint plat_cnt = 0;
+	clGetPlatformIDs(0, 0, &plat_cnt);
+
+	cl_platform_id platform_ids[100];
+	clGetPlatformIDs(plat_cnt, platform_ids, NULL);
+
+	size_t info_size;
+	char *platform_info;
+	const cl_platform_info attrTypes[4] = {
+		CL_PLATFORM_PROFILE,
+		CL_PLATFORM_VERSION,
+		CL_PLATFORM_NAME,
+		CL_PLATFORM_VENDOR };
+
+	if (DEBUG) {
+		printf("[ Platform Information ]\n\n");
+	}
+
+	for (i = 0; i < 4; i++) {
+		err = clGetPlatformInfo(platform_ids[0], attrTypes[i], 0, NULL, &info_size);
+		if (err != CL_SUCCESS) {
+			printf("Error: failed to get platform info size. %d\n", err);
+			return EXIT_FAILURE;
+		}
+		platform_info = (char*) malloc(info_size);
+		err = clGetPlatformInfo(platform_ids[0], attrTypes[i], info_size, platform_info, NULL);
+		if (err != CL_SUCCESS) {
+			printf("Error: failed to get platform info. %d\n", err);
+			return EXIT_FAILURE;
+		}
+
+		if (DEBUG) {
+			printf("%s\n", platform_info);
+		}
+
+		free(platform_info);
+	}
+
+	if (DEBUG) {
+		printf("\n");
+	}
+
+	// Connect to compute devices
+	cl_uint dev_cnt;
+#ifdef USE_CPU
+	err = clGetDeviceIDs(platform_ids[0], CL_DEVICE_TYPE_CPU, 100, device_ids, &dev_cnt);
+#elif USE_GPU
+	err = clGetDeviceIDs(platform_ids[0], CL_DEVICE_TYPE_GPU, 100, device_ids, &dev_cnt);
+#endif // Compute devices
+
+	if (DEBUG) {
+		printf("[ Device Information ]\n\n");
+		printf("# of devices: %u\n\n", dev_cnt);
+	}
+
+	// Create compute context
+	context = clCreateContext(0, dev_cnt, device_ids, NULL, NULL, &err);
+	if (err != CL_SUCCESS) {
+		printf("Error: failed to create compute context. %d\n", err);
+		return EXIT_FAILURE;
+	}
+
+	// Create command queues (in-order)
+	for (i = 0; i < dev_cnt; i++) {
+		commands[i] = clCreateCommandQueue(context, device_ids[i], CL_QUEUE_PROFILING_ENABLE, &err);
+		if (err != CL_SUCCESS) {
+			printf("Error: failed to create command queue %d. %d\n", i, err);
+			return EXIT_FAILURE;
+		}
+	}
+
+	// Create kernels
+
+#endif // OpenCL
+
 	// **********Calling the Swaption Pricing Routine*****************
 #ifdef ENABLE_PARSEC_HOOKS
 	__parsec_roi_begin();
@@ -281,9 +375,14 @@ int main(int argc, char *argv[])
 
 #endif // TBB_VERSION	
 
+#elif USE_CPU
+
+#elif USE_GPU
+
 #else
 	int threadID=0;
 	worker(&threadID);
+
 #endif //ENABLE_THREADS
 
 	clock_gettime(CLOCK_MONOTONIC, &end);
