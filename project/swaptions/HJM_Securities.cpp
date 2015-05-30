@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <math.h>
 #include <iostream>
+#include <time.h>
 
 #include "nr_routines.h"
 #include "HJM.h"
@@ -46,59 +47,61 @@ FTYPE *dSumSimSwaptionPrice_global_ptr;
 FTYPE *dSumSquareSimSwaptionPrice_global_ptr;
 int chunksize;
 
+int timespec_subtract(struct timespec*, struct timespec*, struct timespec*);
+
 
 #ifdef TBB_VERSION
 struct Worker {
-  Worker(){}
-  void operator()(const tbb::blocked_range<int> &range) const {
-    FTYPE pdSwaptionPrice[2];
-    int begin = range.begin();
-    int end   = range.end();
+	Worker(){}
+	void operator()(const tbb::blocked_range<int> &range) const {
+		FTYPE pdSwaptionPrice[2];
+		int begin = range.begin();
+		int end   = range.end();
 
-    for(int i=begin; i!=end; i++) {
-      int iSuccess = HJM_Swaption_Blocking(pdSwaptionPrice,  swaptions[i].dStrike, 
-					   swaptions[i].dCompounding, swaptions[i].dMaturity, 
-					   swaptions[i].dTenor, swaptions[i].dPaymentInterval,
-					   swaptions[i].iN, swaptions[i].iFactors, swaptions[i].dYears, 
-					   swaptions[i].pdYield, swaptions[i].ppdFactors,
-					   100, NUM_TRIALS, BLOCK_SIZE, 0);
-      assert(iSuccess == 1);
-      swaptions[i].dSimSwaptionMeanPrice = pdSwaptionPrice[0];
-      swaptions[i].dSimSwaptionStdError = pdSwaptionPrice[1];
+		for(int i=begin; i!=end; i++) {
+			int iSuccess = HJM_Swaption_Blocking(pdSwaptionPrice,  swaptions[i].dStrike, 
+					swaptions[i].dCompounding, swaptions[i].dMaturity, 
+					swaptions[i].dTenor, swaptions[i].dPaymentInterval,
+					swaptions[i].iN, swaptions[i].iFactors, swaptions[i].dYears, 
+					swaptions[i].pdYield, swaptions[i].ppdFactors,
+					100, NUM_TRIALS, BLOCK_SIZE, 0);
+			assert(iSuccess == 1);
+			swaptions[i].dSimSwaptionMeanPrice = pdSwaptionPrice[0];
+			swaptions[i].dSimSwaptionStdError = pdSwaptionPrice[1];
 
-    }
-     
+		}
 
 
-  }
+
+	}
 };
 
 #endif //TBB_VERSION
 
 
 void * worker(void *arg){
-  int tid = *((int *)arg);
-  FTYPE pdSwaptionPrice[2];
+	int tid = *((int *)arg);
+	FTYPE pdSwaptionPrice[2];
 
-  int chunksize = nSwaptions/nThreads;
-  int beg = tid*chunksize;
-  int end = (tid+1)*chunksize;
-  if(tid == nThreads -1 )
-    end = nSwaptions;
+	int chunksize = nSwaptions/nThreads;
+	int beg = tid*chunksize;
+	int end = (tid+1)*chunksize;
+	if(tid == nThreads -1 )
+		end = nSwaptions;
 
-  for(int i=beg; i < end; i++) {
-     int iSuccess = HJM_Swaption_Blocking(pdSwaptionPrice,  swaptions[i].dStrike, 
-                                       swaptions[i].dCompounding, swaptions[i].dMaturity, 
-                                       swaptions[i].dTenor, swaptions[i].dPaymentInterval,
-                                       swaptions[i].iN, swaptions[i].iFactors, swaptions[i].dYears, 
-                                       swaptions[i].pdYield, swaptions[i].ppdFactors,
-                                       100, NUM_TRIALS, BLOCK_SIZE, 0);
-     assert(iSuccess == 1);
-     swaptions[i].dSimSwaptionMeanPrice = pdSwaptionPrice[0];
-     swaptions[i].dSimSwaptionStdError = pdSwaptionPrice[1];
-   }
+	for(int i=beg; i < end; i++) {
+		int iSuccess = HJM_Swaption_Blocking(pdSwaptionPrice,  swaptions[i].dStrike, 
+				swaptions[i].dCompounding, swaptions[i].dMaturity, 
+				swaptions[i].dTenor, swaptions[i].dPaymentInterval,
+				swaptions[i].iN, swaptions[i].iFactors, swaptions[i].dYears, 
+				swaptions[i].pdYield, swaptions[i].ppdFactors,
+				100, NUM_TRIALS, BLOCK_SIZE, 0);
+		assert(iSuccess == 1);
+		swaptions[i].dSimSwaptionMeanPrice = pdSwaptionPrice[0];
+		swaptions[i].dSimSwaptionStdError = pdSwaptionPrice[1];
+	}
 
-   return NULL;    
+	return NULL;    
 }
 
 
@@ -112,42 +115,44 @@ int main(int argc, char *argv[])
 {
 	int iSuccess = 0;
 	int i,j;
-	
+
+	struct timespec start, end, spent;
+
 	FTYPE **factors=NULL;
 
 #ifdef PARSEC_VERSION
 #define __PARSEC_STRING(x) #x
 #define __PARSEC_XSTRING(x) __PARSEC_STRING(x)
-        printf("PARSEC Benchmark Suite Version "__PARSEC_XSTRING(PARSEC_VERSION)"\n"); 
+	printf("PARSEC Benchmark Suite Version "__PARSEC_XSTRING(PARSEC_VERSION)"\n"); 
 	fflush(NULL);
 #else
-        printf("PARSEC Benchmark Suite\n");
+	printf("PARSEC Benchmark Suite\n");
 	fflush(NULL);
 #endif //PARSEC_VERSION
 #ifdef ENABLE_PARSEC_HOOKS
 	__parsec_bench_begin(__parsec_swaptions);
 #endif
-	
-        if(argc == 1)
-        {
-          fprintf(stderr," usage: \n\t-ns [number of swaptions (should be > number of threads]\n\t-sm [number of simulations]\n\t-nt [number of threads]\n"); 
-          exit(1);
-        }
 
-        for (int j=1; j<argc; j++) {
-	  if (!strcmp("-sm", argv[j])) {NUM_TRIALS = atoi(argv[++j]);}
-	  else if (!strcmp("-nt", argv[j])) {nThreads = atoi(argv[++j]);} 
-	  else if (!strcmp("-ns", argv[j])) {nSwaptions = atoi(argv[++j]);} 
-          else {
-            fprintf(stderr," usage: \n\t-ns [number of swaptions (should be > number of threads]\n\t-sm [number of simulations]\n\t-nt [number of threads]\n"); 
-          }
-        }
+	if(argc == 1)
+	{
+		fprintf(stderr," usage: \n\t-ns [number of swaptions (should be > number of threads]\n\t-sm [number of simulations]\n\t-nt [number of threads]\n"); 
+		exit(1);
+	}
 
-        if(nSwaptions < nThreads) {
-	  nSwaptions = nThreads; 
-        }
+	for (int j=1; j<argc; j++) {
+		if (!strcmp("-sm", argv[j])) {NUM_TRIALS = atoi(argv[++j]);}
+		else if (!strcmp("-nt", argv[j])) {nThreads = atoi(argv[++j]);} 
+		else if (!strcmp("-ns", argv[j])) {nSwaptions = atoi(argv[++j]);} 
+		else {
+			fprintf(stderr," usage: \n\t-ns [number of swaptions (should be > number of threads]\n\t-sm [number of simulations]\n\t-nt [number of threads]\n"); 
+		}
+	}
 
-        printf("Number of Simulations: %d,  Number of threads: %d Number of swaptions: %d\n", NUM_TRIALS, nThreads, nSwaptions);
+	if(nSwaptions < nThreads) {
+		nSwaptions = nThreads; 
+	}
+
+	printf("Number of Simulations: %d,  Number of threads: %d Number of swaptions: %d\n", NUM_TRIALS, nThreads, nSwaptions);
 
 #ifdef ENABLE_THREADS
 
@@ -181,7 +186,7 @@ int main(int argc, char *argv[])
 	}
 #endif //ENABLE_THREADS
 
-        // initialize input dataset
+	// initialize input dataset
 	factors = dmatrix(0, iFactors-1, 0, iN-2);
 	//the three rows store vol data for the three factors
 	factors[0][0]= .01;
@@ -216,39 +221,40 @@ int main(int argc, char *argv[])
 	factors[2][7]= -.000750;
 	factors[2][8]= -.001000;
 	factors[2][9]= -.001250;
-	
-        // setting up multiple swaptions
-        swaptions = 
+
+	// setting up multiple swaptions
+	swaptions = 
 #ifdef TBB_VERSION
-	  (parm *)memory_parm.allocate(sizeof(parm)*nSwaptions, NULL);
+		(parm *)memory_parm.allocate(sizeof(parm)*nSwaptions, NULL);
 #else
-	  (parm *)malloc(sizeof(parm)*nSwaptions);
+	(parm *)malloc(sizeof(parm)*nSwaptions);
 #endif
 
-        int k;
-        for (i = 0; i < nSwaptions; i++) {
-          swaptions[i].Id = i;
-          swaptions[i].iN = iN;
-          swaptions[i].iFactors = iFactors;
-          swaptions[i].dYears = dYears;
+	int k;
+	for (i = 0; i < nSwaptions; i++) {
+		swaptions[i].Id = i;
+		swaptions[i].iN = iN;
+		swaptions[i].iFactors = iFactors;
+		swaptions[i].dYears = dYears;
 
-          swaptions[i].dStrike =  .1; 
-          swaptions[i].dCompounding =  0;
-          swaptions[i].dMaturity =  1;
-          swaptions[i].dTenor =  2.0;
-          swaptions[i].dPaymentInterval =  1.0;
+		swaptions[i].dStrike =  (double)i / (double)nSwaptions; 
+		swaptions[i].dCompounding =  0;
+		swaptions[i].dMaturity =  1;
+		swaptions[i].dTenor =  2.0;
+		swaptions[i].dPaymentInterval =  1.0;
 
-          swaptions[i].pdYield = dvector(0,iN-1);;
-          swaptions[i].pdYield[0] = .1;
-          for(j=1;j<=swaptions[i].iN-1;++j)
-            swaptions[i].pdYield[j] = swaptions[i].pdYield[j-1]+.005;
+		swaptions[i].pdYield = dvector(0,iN-1);;
+		swaptions[i].pdYield[0] = .1;
+		for(j=1;j<=swaptions[i].iN-1;++j)
+			swaptions[i].pdYield[j] = swaptions[i].pdYield[j-1]+.005;
 
-          swaptions[i].ppdFactors = dmatrix(0, swaptions[i].iFactors-1, 0, swaptions[i].iN-2);
-          for(k=0;k<=swaptions[i].iFactors-1;++k)
-                 for(j=0;j<=swaptions[i].iN-2;++j)
-                        swaptions[i].ppdFactors[k][j] = factors[k][j];
-        }
+		swaptions[i].ppdFactors = dmatrix(0, swaptions[i].iFactors-1, 0, swaptions[i].iN-2);
+		for(k=0;k<=swaptions[i].iFactors-1;++k)
+			for(j=0;j<=swaptions[i].iN-2;++j)
+				swaptions[i].ppdFactors[k][j] = factors[k][j];
+	}
 
+	clock_gettime(CLOCK_MONOTONIC, &start);
 
 	// **********Calling the Swaption Pricing Routine*****************
 #ifdef ENABLE_PARSEC_HOOKS
@@ -261,15 +267,15 @@ int main(int argc, char *argv[])
 	Worker w;
 	tbb::parallel_for(tbb::blocked_range<int>(0,nSwaptions,TBB_GRAINSIZE),w);
 #else
-	
+
 	int threadIDs[nThreads];
-        for (i = 0; i < nThreads; i++) {
-          threadIDs[i] = i;
-          pthread_create(&threads[i], &pthread_custom_attr, worker, &threadIDs[i]);
-        }
-        for (i = 0; i < nThreads; i++) {
-          pthread_join(threads[i], NULL);
-        }
+	for (i = 0; i < nThreads; i++) {
+		threadIDs[i] = i;
+		pthread_create(&threads[i], &pthread_custom_attr, worker, &threadIDs[i]);
+	}
+	for (i = 0; i < nThreads; i++) {
+		pthread_join(threads[i], NULL);
+	}
 
 	free(threads);
 
@@ -280,26 +286,30 @@ int main(int argc, char *argv[])
 	worker(&threadID);
 #endif //ENABLE_THREADS
 
+	clock_gettime(CLOCK_MONOTONIC, &end);
+	timespec_subtract(&spent, &end, &start);
+	printf("Time spent: %ld.%09ld\n", spent.tv_sec, spent.tv_nsec);
+
 #ifdef ENABLE_PARSEC_HOOKS
 	__parsec_roi_end();
 #endif
 
-        for (i = 0; i < nSwaptions; i++) {
-          fprintf(stderr,"Swaption%d: [SwaptionPrice: %.10lf StdError: %.10lf] \n", 
-                   i, swaptions[i].dSimSwaptionMeanPrice, swaptions[i].dSimSwaptionStdError);
+	for (i = 0; i < nSwaptions; i++) {
+		fprintf(stderr,"Swaption%d: [SwaptionPrice: %.10lf StdError: %.10lf] \n", 
+				i, swaptions[i].dSimSwaptionMeanPrice, swaptions[i].dSimSwaptionStdError);
 
-        }
+	}
 
-        for (i = 0; i < nSwaptions; i++) {
-          free_dvector(swaptions[i].pdYield, 0, swaptions[i].iN-1);
-	  free_dmatrix(swaptions[i].ppdFactors, 0, swaptions[i].iFactors-1, 0, swaptions[i].iN-2);
-        }
+	for (i = 0; i < nSwaptions; i++) {
+		free_dvector(swaptions[i].pdYield, 0, swaptions[i].iN-1);
+		free_dmatrix(swaptions[i].ppdFactors, 0, swaptions[i].iFactors-1, 0, swaptions[i].iN-2);
+	}
 
 
 #ifdef TBB_VERSION
 	memory_parm.deallocate(swaptions, sizeof(parm));
 #else
-        free(swaptions);
+	free(swaptions);
 #endif // TBB_VERSION
 
 	//***********************************************************
@@ -309,4 +319,27 @@ int main(int argc, char *argv[])
 #endif
 
 	return iSuccess;
+}
+
+int timespec_subtract (struct timespec* result, struct timespec *x, struct timespec *y)
+{
+	/* Perform the carry for the later subtraction by updating y. */
+	if (x->tv_nsec < y->tv_nsec) {
+		int nsec = (y->tv_nsec - x->tv_nsec) / 1000000000 + 1;
+		y->tv_nsec -= 1000000000 * nsec;
+		y->tv_sec += nsec;
+	}
+	if (x->tv_nsec - y->tv_nsec > 1000000000) {
+		int nsec = (x->tv_nsec - y->tv_nsec) / 1000000000;
+		y->tv_nsec += 1000000000 * nsec;
+		y->tv_sec -= nsec;
+	}
+
+	/* Compute the time remaining to wait.
+	 * tv_nsec is certainly positive. */
+	result->tv_sec = x->tv_sec - y->tv_sec;
+	result->tv_nsec = x->tv_nsec - y->tv_nsec;
+
+	/* Return 1 if result is negative. */
+	return x->tv_sec < y->tv_sec;
 }

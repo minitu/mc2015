@@ -1,5 +1,5 @@
 DEF =
-INCLUDE =
+INCLUDE = -lrt
 
 EXEC = swaptions 
 
@@ -11,6 +11,22 @@ ifdef version
   ifeq "$(version)" "tbb"
     DEF := $(DEF) -DENABLE_THREADS -DTBB_VERSION
     LIBS := $(LIBS) -ltbb
+  endif
+  ifeq "$(version)" "cpu"
+    DEF := $(DEF) -DUSE_CPU
+    LIBS := $(LIBS) -lOpenCL
+  endif
+  ifeq "$(version)" "gpu"
+    DEF := $(DEF) -DUSE_GPU
+    LIBS := $(LIBS) -lOpenCL
+  endif
+  ifeq "$(version)" "mpi"
+    DEF := $(DEF) -DUSE_MPI
+    LIBS := $(LIBS)
+  endif
+  ifeq "$(version)" "snucl"
+    DEF := $(DEF) -DUSE_SNUCL
+    LIBS := $(LIBS)
   endif
 endif
 
