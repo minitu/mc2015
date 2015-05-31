@@ -31,8 +31,13 @@ tbb::cache_aligned_allocator<parm> memory_parm;
 
 #if defined(USE_CPU) || defined(USE_GPU)
 #include <CL/opencl.h>
+#ifdef _OPENMP
+#include <omp.h>
+#endif // OpenMP
 #define KCNT 1
-#endif
+#define MAX_SOURCE_SIZE 0x100000
+using namespace std;
+#endif // USE_CPU || USE_GPU
 
 #ifdef ENABLE_PARSEC_HOOKS
 #include <hooks.h>
@@ -263,6 +268,106 @@ int main(int argc, char *argv[])
 	clock_gettime(CLOCK_MONOTONIC, &start);
 
 #if defined(USE_CPU) || defined(USE_GPU)
+	
+	// Do some computations in HJM_Swaption_Blocking
+	FTYPE dCompounding = swaptions[0].dCompounding;
+	FTYPE dMaturity = swaptions[0].dMaturity;
+	FTYPE dTenor = swaptions[0].dTenor;
+	FTYPE dPaymentInterval = swaptions[0].dPaymentInterval;
+	FTYPE ddelt = (FTYPE)(dYears/iN);
+	int iFreqRatio = (int)(dPaymentInterval/ddelt + 0.5);
+	FTYPE *dStrikeCont = (FTYPE*)malloc(sizeof(FTYPE) * nSwaptions); // Differ
+	int iSwapVectorLength = (int)(iN - dMaturity/ddelt + 0.5);
+	int iSwapStartTimeIndex = (int)(dMaturity/ddelt + 0.5);
+	int iSwapTimePoints = (int)(dTenor/ddelt + 0.5);
+	FTYPE dSwapVectorYears = (FTYPE)(iSwapVectorLength*ddelt);
+
+#pragma omp parallel for
+	for (i = 0; i < nSwaptions; i++) {
+		if (swaptions[i].dCompounding == 0) {
+			dStrikeCont[i] = swaptions[i].dStrike;
+		} else {
+			dStrikeCont[i] = (1/swaptions[i].dCompounding) * log(1+swaptions[i].dStrike*swaptions[i].dCompounding);
+		}
+	}
+
+	// Vector or matrix arguments to HJM_Swaption_Blocking (needs copying)
+	cl_mem d_pdYield;
+	cl_mem d_ppdFactors;
+
+	// Prepare per trial data
+	cl_mem cl_ppdHJMPath;
+	cl_mem cl_pdForward;
+	cl_mem cl_ppdDrifts;
+	cl_mem cl_pdTotalDrift;
+
+	cl_mem cl_pdDiscountingRatePath;
+	cl_mem cl_pdPayoffDiscountFactors;
+	cl_mem cl_pdSwapRatePath;
+	cl_mem cl_pdSwapDiscountFactors;
+	cl_mem cl_pdSwapPayoffs;
+
+	// Accumulators (X lTrials)
+	cl_mem cl_dSumSimSwaptionPrice;
+	cl_mem cl_dSumSquareSimSwaptionPrice;
+
+	// Store swap payoffs, generate forward curve, compute drifts
+	FTYPE **pdSwapPayoffs = (FTYPE**)malloc(sizeof(FTYPE*) * nSwaptions);
+	FTYPE **pdForward = (FTYPE**)malloc(sizeof(FTYPE*) * nSwaptions);
+	FTYPE **pdTotalDrift = (FTYPE**)malloc(sizeof(FTYPE*) * nSwaptions);
+	FTYPE **ppdDrifts;
+	int l;
+	FTYPE dSumVol = 0.0;
+
+//#pragma omp parallel for
+	for (i = 0; i < nSwaptions; i++) {
+		// Store swap payoffs
+		pdSwapPayoffs[i] = (FTYPE*)malloc(sizeof(FTYPE) * iSwapVectorLength);
+
+		for (j = 0; j <= iSwapVectorLength - 1; ++j)
+			pdSwapPayoffs[i][j] = 0.0;
+		for (j = iFreqRatio; j <= iSwapTimePoints; j+=iFreqRatio) {
+			if (j != iSwapTimePoints)
+				pdSwapPayoffs[i][j] = exp(dStrikeCont[i]*dPaymentInterval) - 1;
+			if (j == iSwapTimePoints)
+				pdSwapPayoffs[i][j] = exp(dStrikeCont[i]*dPaymentInterval);
+		}
+
+		// Generate forward curve
+		pdForward[i] = (FTYPE*)malloc(sizeof(FTYPE) * iN);
+
+		pdForward[i][0] = swaptions[i].pdYield[0];
+		for (j = 1; j <= iN-1; ++j) {
+			pdForward[i][j] = (j+1)*swaptions[i].pdYield[j] - j*swaptions[i].pdYield[j-1];
+		}
+
+		// Compute drifts
+		ppdDrifts = dmatrix(0, iFactors-1, 0, iN-2);
+		pdTotalDrift[i] = (FTYPE*)malloc(sizeof(FTYPE) * (iN-1));
+
+		for (j = 0; j <= iFactors-1; ++j)
+			ppdDrifts[j][0] = 0.5*ddelt*(swaptions[i].ppdFactors[j][0])*(swaptions[i].ppdFactors[j][0]);
+		
+		for (j = 0; j <= iFactors-1; ++j)
+			for (k = 1; k <= iN-2; ++k) {
+				ppdDrifts[j][k] = 0;
+				for (l = 0; l <= k-1; ++l)
+					ppdDrifts[j][k] -= ppdDrifts[j][l];
+				dSumVol = 0;
+				for (l = 0; l <= k; ++l)
+					dSumVol += swaptions[i].ppdFactors[j][l];
+				ppdDrifts[j][k] += 0.5*ddelt*(dSumVol)*(dSumVol);
+			}
+
+		for (j = 0; j <= iN-2; ++j) {
+			pdTotalDrift[i][j] = 0;
+			for (k = 0; k <= iFactors-1; ++k)
+				pdTotalDrift[i][j] += ppdDrifts[k][j];
+		}
+
+		free_dmatrix(ppdDrifts, 0, iFactors-1, 0, iN-2);
+	}
+
 	// OpenCL
 	int err;
 
@@ -272,8 +377,6 @@ int main(int argc, char *argv[])
 	cl_program programs[KCNT];
 	cl_kernel kernels[KCNT];
 
-	// cl_mem
-	
 	// Gather platform data
 	cl_uint plat_cnt = 0;
 	clGetPlatformIDs(0, 0, &plat_cnt);
@@ -289,9 +392,8 @@ int main(int argc, char *argv[])
 		CL_PLATFORM_NAME,
 		CL_PLATFORM_VENDOR };
 
-	if (DEBUG) {
-		printf("[ Platform Information ]\n\n");
-	}
+#ifdef DEBUG
+	printf("\n[ Platform Information ]\n\n");
 
 	for (i = 0; i < 4; i++) {
 		err = clGetPlatformInfo(platform_ids[0], attrTypes[i], 0, NULL, &info_size);
@@ -306,16 +408,13 @@ int main(int argc, char *argv[])
 			return EXIT_FAILURE;
 		}
 
-		if (DEBUG) {
-			printf("%s\n", platform_info);
-		}
+		printf("%s\n", platform_info);
 
 		free(platform_info);
 	}
 
-	if (DEBUG) {
-		printf("\n");
-	}
+	printf("\n");
+#endif
 
 	// Connect to compute devices
 	cl_uint dev_cnt;
@@ -325,10 +424,10 @@ int main(int argc, char *argv[])
 	err = clGetDeviceIDs(platform_ids[0], CL_DEVICE_TYPE_GPU, 100, device_ids, &dev_cnt);
 #endif // Compute devices
 
-	if (DEBUG) {
-		printf("[ Device Information ]\n\n");
-		printf("# of devices: %u\n\n", dev_cnt);
-	}
+#ifdef DEBUG
+	printf("[ Device Information ]\n\n");
+	printf("# of devices: %u\n\n", dev_cnt);
+#endif
 
 	// Create compute context
 	context = clCreateContext(0, dev_cnt, device_ids, NULL, NULL, &err);
@@ -339,14 +438,107 @@ int main(int argc, char *argv[])
 
 	// Create command queues (in-order)
 	for (i = 0; i < dev_cnt; i++) {
-		commands[i] = clCreateCommandQueue(context, device_ids[i], CL_QUEUE_PROFILING_ENABLE, &err);
+		commands[i] = clCreateCommandQueue(context, device_ids[i], 0, &err);
 		if (err != CL_SUCCESS) {
 			printf("Error: failed to create command queue %d. %d\n", i, err);
 			return EXIT_FAILURE;
 		}
 	}
 
+	// Create programs
+	FILE *fp;
+	char *fileName[KCNT];
+	char *src_str;
+	size_t src_size;
+
+	for (i = 0; i < KCNT; i++) {
+		fileName[i] = (char*)malloc(sizeof(char) * 100);
+	}
+
+	// KERNEL
+	strcpy(fileName[0], "./init.cl");
+	//
+
+	for (i = 0; i < KCNT; i++) {
+		fp = fopen(fileName[i], "r");
+		if (!fp) {
+			printf("Error: file read failed.\n");
+			return EXIT_FAILURE;
+		}
+		src_str = (char*)malloc(MAX_SOURCE_SIZE);
+		src_size = fread(src_str, 1, MAX_SOURCE_SIZE, fp);
+
+		programs[i] = clCreateProgramWithSource(context, 1, (const char **)&src_str, (const size_t *)&src_size, &err);
+
+		if (err != CL_SUCCESS) {
+			printf("Error: failed to create program %d. %d\n", i, err);
+			return EXIT_FAILURE;
+		}
+
+		fclose(fp);
+		free(src_str);
+		free(fileName[i]);
+	}
+
+	// Build programs
+	string build_str;
+	char *build_options;
+
+#ifdef DEBUG
+	printf("[ Kernel Build Options ]\n\n");
+#endif
+
+	for (i = 0; i < KCNT; i++) {
+		// Set build options (KERNEL)
+		build_str = "-DFTYPE=double"; // How to pass FTYPE as string?
+		build_options = const_cast<char*>(build_str.c_str());
+#ifdef DEBUG
+		printf("Kernel %d: %s\n", i, build_options);
+#endif
+		err = clBuildProgram(programs[i], 0, NULL, build_options, NULL, NULL);
+
+		if (err != CL_SUCCESS) {
+			printf("Error: failed to build program %d. %d\n", i, err);
+			size_t log_size;
+			clGetProgramBuildInfo(programs[i], device_ids[0], CL_PROGRAM_BUILD_LOG, 0, NULL, &log_size);
+			char *log = (char*) malloc(sizeof(char) * log_size);
+			clGetProgramBuildInfo(programs[i], device_ids[0], CL_PROGRAM_BUILD_LOG, log_size, log, NULL);
+			printf("%s\n", log);
+			return EXIT_FAILURE;
+		}
+	}
+
+#ifdef DEBUG
+	printf("\n");
+#endif
+
 	// Create kernels
+	string kernel_str;
+	char *kernelName;
+
+	for (i = 0; i < KCNT; i++) {
+		// Set kernel name (KERNEL)
+		kernel_str = "swaption_init";
+		kernelName = const_cast<char*>(kernel_str.c_str());
+		kernels[i] = clCreateKernel(programs[i], kernelName, &err);
+
+		if (err != CL_SUCCESS) {
+			printf("Error: failed to create kernel %d. %d\n", i, err);
+			return EXIT_FAILURE;
+		}
+	}
+
+	// Free stuff
+	for (i = 0; i < nSwaptions; i++) {
+		free(pdSwapPayoffs[i]);
+		free(pdForward[i]);
+		free(pdTotalDrift[i]);
+	}
+	free(pdSwapPayoffs);
+	free(pdForward);
+	free(pdTotalDrift);
+	free(dStrikeCont);
+
 
 #endif // OpenCL
 
