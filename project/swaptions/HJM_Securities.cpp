@@ -34,8 +34,9 @@ tbb::cache_aligned_allocator<parm> memory_parm;
 #ifdef _OPENMP
 #include <omp.h>
 #endif // OpenMP
-#define KCNT 1
 #define MAX_SOURCE_SIZE 0x100000
+#define KCNT 1
+#define GLOBAL_WORK_SIZE 1024
 using namespace std;
 #endif // USE_CPU || USE_GPU
 
@@ -268,7 +269,169 @@ int main(int argc, char *argv[])
 	clock_gettime(CLOCK_MONOTONIC, &start);
 
 #if defined(USE_CPU) || defined(USE_GPU)
-	
+	// OpenCL
+	int err;
+
+	cl_device_id device_ids[100];
+	cl_context context;
+	cl_command_queue commands[100];
+	cl_program programs[KCNT];
+	cl_kernel kernels[KCNT];
+
+	// Gather platform data
+	cl_uint plat_cnt = 0;
+	clGetPlatformIDs(0, 0, &plat_cnt);
+
+	cl_platform_id platform_ids[100];
+	clGetPlatformIDs(plat_cnt, platform_ids, NULL);
+
+	size_t info_size;
+	char *platform_info;
+	const cl_platform_info attrTypes[4] = {
+		CL_PLATFORM_PROFILE,
+		CL_PLATFORM_VERSION,
+		CL_PLATFORM_NAME,
+		CL_PLATFORM_VENDOR };
+
+#ifdef DEBUG
+	printf("\n[ Platform Information ]\n\n");
+
+	for (i = 0; i < 4; i++) {
+		err = clGetPlatformInfo(platform_ids[0], attrTypes[i], 0, NULL, &info_size);
+		if (err != CL_SUCCESS) {
+			printf("Error: failed to get platform info size. %d\n", err);
+			return EXIT_FAILURE;
+		}
+		platform_info = (char*) malloc(info_size);
+		err = clGetPlatformInfo(platform_ids[0], attrTypes[i], info_size, platform_info, NULL);
+		if (err != CL_SUCCESS) {
+			printf("Error: failed to get platform info. %d\n", err);
+			return EXIT_FAILURE;
+		}
+
+		printf("%s\n", platform_info);
+
+		free(platform_info);
+	}
+
+	printf("\n");
+#endif
+
+	// Connect to compute devices
+	cl_uint dev_cnt;
+#ifdef USE_CPU
+	err = clGetDeviceIDs(platform_ids[0], CL_DEVICE_TYPE_CPU, 100, device_ids, &dev_cnt);
+#elif USE_GPU
+	err = clGetDeviceIDs(platform_ids[0], CL_DEVICE_TYPE_GPU, 100, device_ids, &dev_cnt);
+#endif // Compute devices
+
+#ifdef DEBUG
+	printf("[ Device Information ]\n\n");
+	printf("# of devices: %u\n\n", dev_cnt);
+#endif
+
+	// Create compute context
+	context = clCreateContext(0, dev_cnt, device_ids, NULL, NULL, &err);
+	if (err != CL_SUCCESS) {
+		printf("Error: failed to create compute context. %d\n", err);
+		return EXIT_FAILURE;
+	}
+
+	// Create command queues (in-order)
+	for (i = 0; i < dev_cnt; i++) {
+		commands[i] = clCreateCommandQueue(context, device_ids[i], 0, &err);
+		if (err != CL_SUCCESS) {
+			printf("Error: failed to create command queue %d. %d\n", i, err);
+			return EXIT_FAILURE;
+		}
+	}
+
+	// Create programs
+	FILE *fp;
+	char *fileName[KCNT];
+	char *src_str;
+	size_t src_size;
+
+	for (i = 0; i < KCNT; i++) {
+		fileName[i] = (char*)malloc(sizeof(char) * 100);
+	}
+
+	// KERNEL
+	strcpy(fileName[0], "./sim1.cl");
+	//
+
+	for (i = 0; i < KCNT; i++) {
+		fp = fopen(fileName[i], "r");
+		if (!fp) {
+			printf("Error: file read failed.\n");
+			return EXIT_FAILURE;
+		}
+		src_str = (char*)malloc(MAX_SOURCE_SIZE);
+		src_size = fread(src_str, 1, MAX_SOURCE_SIZE, fp);
+
+		programs[i] = clCreateProgramWithSource(context, 1, (const char **)&src_str, (const size_t *)&src_size, &err);
+
+		if (err != CL_SUCCESS) {
+			printf("Error: failed to create program %d. %d\n", i, err);
+			return EXIT_FAILURE;
+		}
+
+		fclose(fp);
+		free(src_str);
+		free(fileName[i]);
+	}
+
+	// Build programs
+	string build_str;
+	char *build_options;
+
+#ifdef DEBUG
+	printf("[ Kernel Build Options ]\n\n");
+#endif
+
+	for (i = 0; i < KCNT; i++) {
+		// Set build options (KERNEL)
+		build_str = "-DFTYPE=double"; // How to pass FTYPE as string?
+		build_options = const_cast<char*>(build_str.c_str());
+#ifdef DEBUG
+		printf("Kernel %d: %s\n", i, build_options);
+#endif
+		err = clBuildProgram(programs[i], 0, NULL, build_options, NULL, NULL);
+
+		if (err != CL_SUCCESS) {
+			printf("Error: failed to build program %d. %d\n", i, err);
+			size_t log_size;
+			clGetProgramBuildInfo(programs[i], device_ids[0], CL_PROGRAM_BUILD_LOG, 0, NULL, &log_size);
+			char *log = (char*) malloc(sizeof(char) * log_size);
+			clGetProgramBuildInfo(programs[i], device_ids[0], CL_PROGRAM_BUILD_LOG, log_size, log, NULL);
+			printf("%s\n", log);
+			return EXIT_FAILURE;
+		}
+	}
+
+#ifdef DEBUG
+	printf("\n");
+#endif
+
+	// Create kernels
+	string kernel_str;
+	char *kernelName;
+
+	for (i = 0; i < KCNT; i++) {
+		// Set kernel name (KERNEL)
+		kernel_str = "swaption_sim1";
+		kernelName = const_cast<char*>(kernel_str.c_str());
+		kernels[i] = clCreateKernel(programs[i], kernelName, &err);
+
+		if (err != CL_SUCCESS) {
+			printf("Error: failed to create kernel %d. %d\n", i, err);
+			return EXIT_FAILURE;
+		}
+	}
+
+	// Set work size
+	size_t globalWorkSize = GLOBAL_WORK_SIZE;
+
 	// Do some computations in HJM_Swaption_Blocking
 	FTYPE dCompounding = swaptions[0].dCompounding;
 	FTYPE dMaturity = swaptions[0].dMaturity;
@@ -368,165 +531,49 @@ int main(int argc, char *argv[])
 		free_dmatrix(ppdDrifts, 0, iFactors-1, 0, iN-2);
 	}
 
-	// OpenCL
-	int err;
+	// Calculate # of swaptions per device
+	int *swp_dev = (int*)malloc(sizeof(int) * dev_cnt);
+	int leftover = nSwaptions % dev_cnt;
+	int tmp_cnt = floor((double)nSwaptions / (double)dev_cnt);
 
-	cl_device_id device_ids[100];
-	cl_context context;
-	cl_command_queue commands[100];
-	cl_program programs[KCNT];
-	cl_kernel kernels[KCNT];
-
-	// Gather platform data
-	cl_uint plat_cnt = 0;
-	clGetPlatformIDs(0, 0, &plat_cnt);
-
-	cl_platform_id platform_ids[100];
-	clGetPlatformIDs(plat_cnt, platform_ids, NULL);
-
-	size_t info_size;
-	char *platform_info;
-	const cl_platform_info attrTypes[4] = {
-		CL_PLATFORM_PROFILE,
-		CL_PLATFORM_VERSION,
-		CL_PLATFORM_NAME,
-		CL_PLATFORM_VENDOR };
-
-#ifdef DEBUG
-	printf("\n[ Platform Information ]\n\n");
-
-	for (i = 0; i < 4; i++) {
-		err = clGetPlatformInfo(platform_ids[0], attrTypes[i], 0, NULL, &info_size);
-		if (err != CL_SUCCESS) {
-			printf("Error: failed to get platform info size. %d\n", err);
-			return EXIT_FAILURE;
-		}
-		platform_info = (char*) malloc(info_size);
-		err = clGetPlatformInfo(platform_ids[0], attrTypes[i], info_size, platform_info, NULL);
-		if (err != CL_SUCCESS) {
-			printf("Error: failed to get platform info. %d\n", err);
-			return EXIT_FAILURE;
-		}
-
-		printf("%s\n", platform_info);
-
-		free(platform_info);
-	}
-
-	printf("\n");
-#endif
-
-	// Connect to compute devices
-	cl_uint dev_cnt;
-#ifdef USE_CPU
-	err = clGetDeviceIDs(platform_ids[0], CL_DEVICE_TYPE_CPU, 100, device_ids, &dev_cnt);
-#elif USE_GPU
-	err = clGetDeviceIDs(platform_ids[0], CL_DEVICE_TYPE_GPU, 100, device_ids, &dev_cnt);
-#endif // Compute devices
-
-#ifdef DEBUG
-	printf("[ Device Information ]\n\n");
-	printf("# of devices: %u\n\n", dev_cnt);
-#endif
-
-	// Create compute context
-	context = clCreateContext(0, dev_cnt, device_ids, NULL, NULL, &err);
-	if (err != CL_SUCCESS) {
-		printf("Error: failed to create compute context. %d\n", err);
-		return EXIT_FAILURE;
-	}
-
-	// Create command queues (in-order)
 	for (i = 0; i < dev_cnt; i++) {
-		commands[i] = clCreateCommandQueue(context, device_ids[i], 0, &err);
-		if (err != CL_SUCCESS) {
-			printf("Error: failed to create command queue %d. %d\n", i, err);
-			return EXIT_FAILURE;
+		if (i < leftover)
+			swp_dev[i] = tmp_cnt + 1;
+		else
+			swp_dev[i] = tmp_cnt;
+	}
+
+	// Calculate # of simulation iterations per work item
+	int *iter_wi = (int*)malloc(sizeof(int) * GLOBAL_WORK_SIZE);
+	int iter_tot = ceil((double)NUM_TRIALS / (double)BLOCK_SIZE);
+	leftover = iter_tot % GLOBAL_WORK_SIZE;
+	tmp_cnt = floor((double)iter_tot / (double)GLOBAL_WORK_SIZE);
+
+	for (i = 0; i < GLOBAL_WORK_SIZE; i++) {
+		if (i < leftover)
+			iter_wi[i] = tmp_cnt + 1;
+		else
+			iter_wi[i] = tmp_cnt;
+	}
+
+	// Enqueue kernels
+	int swp_cnt;
+	int cur_swp = 0;
+
+	for (i = 0; i < dev_cnt; i++) {
+		swp_cnt = 0;
+
+		while (1) {
+			if (swp_cnt >= swp_dev[i])
+				break;
+			
+			// Enqueue swaption
+			
+			swp_cnt++;
+			cur_swp++;
 		}
 	}
 
-	// Create programs
-	FILE *fp;
-	char *fileName[KCNT];
-	char *src_str;
-	size_t src_size;
-
-	for (i = 0; i < KCNT; i++) {
-		fileName[i] = (char*)malloc(sizeof(char) * 100);
-	}
-
-	// KERNEL
-	strcpy(fileName[0], "./init.cl");
-	//
-
-	for (i = 0; i < KCNT; i++) {
-		fp = fopen(fileName[i], "r");
-		if (!fp) {
-			printf("Error: file read failed.\n");
-			return EXIT_FAILURE;
-		}
-		src_str = (char*)malloc(MAX_SOURCE_SIZE);
-		src_size = fread(src_str, 1, MAX_SOURCE_SIZE, fp);
-
-		programs[i] = clCreateProgramWithSource(context, 1, (const char **)&src_str, (const size_t *)&src_size, &err);
-
-		if (err != CL_SUCCESS) {
-			printf("Error: failed to create program %d. %d\n", i, err);
-			return EXIT_FAILURE;
-		}
-
-		fclose(fp);
-		free(src_str);
-		free(fileName[i]);
-	}
-
-	// Build programs
-	string build_str;
-	char *build_options;
-
-#ifdef DEBUG
-	printf("[ Kernel Build Options ]\n\n");
-#endif
-
-	for (i = 0; i < KCNT; i++) {
-		// Set build options (KERNEL)
-		build_str = "-DFTYPE=double"; // How to pass FTYPE as string?
-		build_options = const_cast<char*>(build_str.c_str());
-#ifdef DEBUG
-		printf("Kernel %d: %s\n", i, build_options);
-#endif
-		err = clBuildProgram(programs[i], 0, NULL, build_options, NULL, NULL);
-
-		if (err != CL_SUCCESS) {
-			printf("Error: failed to build program %d. %d\n", i, err);
-			size_t log_size;
-			clGetProgramBuildInfo(programs[i], device_ids[0], CL_PROGRAM_BUILD_LOG, 0, NULL, &log_size);
-			char *log = (char*) malloc(sizeof(char) * log_size);
-			clGetProgramBuildInfo(programs[i], device_ids[0], CL_PROGRAM_BUILD_LOG, log_size, log, NULL);
-			printf("%s\n", log);
-			return EXIT_FAILURE;
-		}
-	}
-
-#ifdef DEBUG
-	printf("\n");
-#endif
-
-	// Create kernels
-	string kernel_str;
-	char *kernelName;
-
-	for (i = 0; i < KCNT; i++) {
-		// Set kernel name (KERNEL)
-		kernel_str = "swaption_init";
-		kernelName = const_cast<char*>(kernel_str.c_str());
-		kernels[i] = clCreateKernel(programs[i], kernelName, &err);
-
-		if (err != CL_SUCCESS) {
-			printf("Error: failed to create kernel %d. %d\n", i, err);
-			return EXIT_FAILURE;
-		}
-	}
 
 	// Free stuff
 	for (i = 0; i < nSwaptions; i++) {
@@ -538,7 +585,8 @@ int main(int argc, char *argv[])
 	free(pdForward);
 	free(pdTotalDrift);
 	free(dStrikeCont);
-
+	free(swp_dev);
+	free(iter_wi);
 
 #endif // OpenCL
 
