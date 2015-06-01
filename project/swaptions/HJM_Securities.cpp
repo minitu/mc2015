@@ -269,7 +269,11 @@ int main(int argc, char *argv[])
 	clock_gettime(CLOCK_MONOTONIC, &start);
 
 #if defined(USE_CPU) || defined(USE_GPU)
-	// OpenCL
+	
+	// ******************** OpenCL ********************
+	
+	// ***** Preparation *****
+	
 	int err;
 
 	cl_device_id device_ids[100];
@@ -357,7 +361,7 @@ int main(int argc, char *argv[])
 	}
 
 	// KERNEL
-	strcpy(fileName[0], "./sim1.cl");
+	strcpy(fileName[0], "./sim.cl");
 	//
 
 	for (i = 0; i < KCNT; i++) {
@@ -419,7 +423,7 @@ int main(int argc, char *argv[])
 
 	for (i = 0; i < KCNT; i++) {
 		// Set kernel name (KERNEL)
-		kernel_str = "swaption_sim1";
+		kernel_str = "swaption_sim";
 		kernelName = const_cast<char*>(kernel_str.c_str());
 		kernels[i] = clCreateKernel(programs[i], kernelName, &err);
 
@@ -429,10 +433,8 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	// Set work size
-	size_t globalWorkSize = GLOBAL_WORK_SIZE;
-
-	// Do some computations in HJM_Swaption_Blocking
+	// ***** Pre-computations in HJM_Swaption_Blocking *****
+	
 	FTYPE dCompounding = swaptions[0].dCompounding;
 	FTYPE dMaturity = swaptions[0].dMaturity;
 	FTYPE dTenor = swaptions[0].dTenor;
@@ -454,38 +456,16 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	// Vector or matrix arguments to HJM_Swaption_Blocking (needs copying)
-	cl_mem d_pdYield;
-	cl_mem d_ppdFactors;
-
-	// Prepare per trial data
-	cl_mem cl_ppdHJMPath;
-	cl_mem cl_pdForward;
-	cl_mem cl_ppdDrifts;
-	cl_mem cl_pdTotalDrift;
-
-	cl_mem cl_pdDiscountingRatePath;
-	cl_mem cl_pdPayoffDiscountFactors;
-	cl_mem cl_pdSwapRatePath;
-	cl_mem cl_pdSwapDiscountFactors;
-	cl_mem cl_pdSwapPayoffs;
-
-	// Accumulators (X lTrials)
-	cl_mem cl_dSumSimSwaptionPrice;
-	cl_mem cl_dSumSquareSimSwaptionPrice;
-
-	// Store swap payoffs, generate forward curve, compute drifts
-	FTYPE **pdSwapPayoffs = (FTYPE**)malloc(sizeof(FTYPE*) * nSwaptions);
-	FTYPE **pdForward = (FTYPE**)malloc(sizeof(FTYPE*) * nSwaptions);
-	FTYPE **pdTotalDrift = (FTYPE**)malloc(sizeof(FTYPE*) * nSwaptions);
+	FTYPE **pdSwapPayoffs = (FTYPE**) malloc(sizeof(FTYPE*) * nSwaptions);
+	FTYPE **pdForward = (FTYPE**) malloc(sizeof(FTYPE*) * nSwaptions);
+	FTYPE **pdTotalDrift = (FTYPE**) malloc(sizeof(FTYPE*) * nSwaptions);
 	FTYPE **ppdDrifts;
 	int l;
 	FTYPE dSumVol = 0.0;
 
-//#pragma omp parallel for
 	for (i = 0; i < nSwaptions; i++) {
 		// Store swap payoffs
-		pdSwapPayoffs[i] = (FTYPE*)malloc(sizeof(FTYPE) * iSwapVectorLength);
+		pdSwapPayoffs[i] = (FTYPE*) malloc(sizeof(FTYPE) * iSwapVectorLength);
 
 		for (j = 0; j <= iSwapVectorLength - 1; ++j)
 			pdSwapPayoffs[i][j] = 0.0;
@@ -497,7 +477,7 @@ int main(int argc, char *argv[])
 		}
 
 		// Generate forward curve
-		pdForward[i] = (FTYPE*)malloc(sizeof(FTYPE) * iN);
+		pdForward[i] = (FTYPE*) malloc(sizeof(FTYPE) * iN);
 
 		pdForward[i][0] = swaptions[i].pdYield[0];
 		for (j = 1; j <= iN-1; ++j) {
@@ -506,7 +486,7 @@ int main(int argc, char *argv[])
 
 		// Compute drifts
 		ppdDrifts = dmatrix(0, iFactors-1, 0, iN-2);
-		pdTotalDrift[i] = (FTYPE*)malloc(sizeof(FTYPE) * (iN-1));
+		pdTotalDrift[i] = (FTYPE*) malloc(sizeof(FTYPE) * (iN-1));
 
 		for (j = 0; j <= iFactors-1; ++j)
 			ppdDrifts[j][0] = 0.5*ddelt*(swaptions[i].ppdFactors[j][0])*(swaptions[i].ppdFactors[j][0]);
@@ -532,7 +512,7 @@ int main(int argc, char *argv[])
 	}
 
 	// Calculate # of swaptions per device
-	int *swp_dev = (int*)malloc(sizeof(int) * dev_cnt);
+	int *swp_dev = (int*) malloc(sizeof(int) * dev_cnt);
 	int leftover = nSwaptions % dev_cnt;
 	int tmp_cnt = floor((double)nSwaptions / (double)dev_cnt);
 
@@ -544,7 +524,7 @@ int main(int argc, char *argv[])
 	}
 
 	// Calculate # of simulation iterations per work item
-	int *iter_wi = (int*)malloc(sizeof(int) * GLOBAL_WORK_SIZE);
+	int *iter_wi = (int*) malloc(sizeof(int) * GLOBAL_WORK_SIZE);
 	int iter_tot = ceil((double)NUM_TRIALS / (double)BLOCK_SIZE);
 	leftover = iter_tot % GLOBAL_WORK_SIZE;
 	tmp_cnt = floor((double)iter_tot / (double)GLOBAL_WORK_SIZE);
@@ -556,7 +536,46 @@ int main(int argc, char *argv[])
 			iter_wi[i] = tmp_cnt;
 	}
 
-	// Enqueue kernels
+	// Generate pdZ for use in HJM_SimPath_Forward_Blocking
+	// (same across all swaptions)
+	long lRndSeed = 100;
+	unsigned int ranCnt = iter_tot * BLOCK_SIZE * (iN-1) * iFactors;
+	unsigned int ri;
+	FTYPE *pdZ = (FTYPE*) malloc(sizeof(FTYPE) * ranCnt);
+
+	for (ri = 0; ri < ranCnt; ri++) {
+		pdZ[ri] = RanUnif(&lRndSeed); // First generate a random number
+		pdZ[ri] = CumNormalInv(pdZ[ri]); // Then call CumNormalInv on that number
+	}
+
+	// ***** Device memory buffers *****
+	
+	// Vector or matrix arguments to HJM_Swaption_Blocking (needs copying)
+	cl_mem cl_pdYield;
+	cl_mem cl_ppdFactors;
+
+	// Prepare per trial data
+	cl_mem cl_ppdHJMPath;
+	cl_mem cl_pdForward;
+	cl_mem cl_ppdDrifts;
+	cl_mem cl_pdTotalDrift;
+
+	cl_mem cl_pdDiscountingRatePath;
+	cl_mem cl_pdPayoffDiscountFactors;
+	cl_mem cl_pdSwapRatePath;
+	cl_mem cl_pdSwapDiscountFactors;
+	cl_mem cl_pdSwapPayoffs;
+
+	// Accumulators (X iter_tot)
+	cl_mem cl_dSumSimSwaptionPrice;
+	cl_mem cl_dSumSquareSimSwaptionPrice;
+
+	// ***** Run kernels *****
+
+	// Set work size
+	size_t globalWorkSize = GLOBAL_WORK_SIZE;
+
+	// Enqueue kernels for each swaption
 	int swp_cnt;
 	int cur_swp = 0;
 
@@ -575,7 +594,7 @@ int main(int argc, char *argv[])
 	}
 
 
-	// Free stuff
+	// ***** Free *****
 	for (i = 0; i < nSwaptions; i++) {
 		free(pdSwapPayoffs[i]);
 		free(pdForward[i]);
@@ -587,6 +606,7 @@ int main(int argc, char *argv[])
 	free(dStrikeCont);
 	free(swp_dev);
 	free(iter_wi);
+	free(pdZ);
 
 #endif // OpenCL
 
