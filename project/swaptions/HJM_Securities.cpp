@@ -35,7 +35,7 @@ tbb::cache_aligned_allocator<parm> memory_parm;
 #include <omp.h>
 #endif // OpenMP
 #define MAX_SOURCE_SIZE 0x100000
-#define KCNT 1
+#define KCNT 2
 #define GLOBAL_WORK_SIZE 1024
 using namespace std;
 #endif // USE_CPU || USE_GPU
@@ -273,7 +273,7 @@ int main(int argc, char *argv[])
 	// ******************** OpenCL ********************
 	
 	// ***** Preparation *****
-	
+
 	int err;
 
 	cl_device_id device_ids[100];
@@ -331,7 +331,21 @@ int main(int argc, char *argv[])
 
 #ifdef DEBUG
 	printf("[ Device Information ]\n\n");
-	printf("# of devices: %u\n\n", dev_cnt);
+	printf("# of devices: %u\n", dev_cnt);
+
+	size_t max_work_group_size;
+	cl_ulong local_mem_size;
+
+	err = clGetDeviceInfo(device_ids[0], CL_DEVICE_MAX_WORK_GROUP_SIZE, sizeof(size_t), &max_work_group_size, NULL);
+	err |= clGetDeviceInfo(device_ids[0], CL_DEVICE_LOCAL_MEM_SIZE, sizeof(cl_ulong), &local_mem_size, NULL);
+
+	if (err != CL_SUCCESS) {
+		printf("Error: failed to get device info. %d\n", err);
+		return EXIT_FAILURE;
+	}
+
+	printf("Max work group size: %zu\n", max_work_group_size);
+	printf("Local memory size: %lu\n\n", local_mem_size);
 #endif
 
 	// Create compute context
@@ -361,7 +375,8 @@ int main(int argc, char *argv[])
 	}
 
 	// KERNEL
-	strcpy(fileName[0], "./sim.cl");
+	strcpy(fileName[0], "./CumNormalInv.cl");
+	strcpy(fileName[1], "./sim.cl");
 	//
 
 	for (i = 0; i < KCNT; i++) {
@@ -395,7 +410,7 @@ int main(int argc, char *argv[])
 
 	for (i = 0; i < KCNT; i++) {
 		// Set build options (KERNEL)
-		build_str = "-DFTYPE=double"; // How to pass FTYPE as string?
+		build_str = "-DFTYPE=double";
 		build_options = const_cast<char*>(build_str.c_str());
 #ifdef DEBUG
 		printf("Kernel %d: %s\n", i, build_options);
@@ -423,7 +438,8 @@ int main(int argc, char *argv[])
 
 	for (i = 0; i < KCNT; i++) {
 		// Set kernel name (KERNEL)
-		kernel_str = "swaption_sim";
+		if (i == 0) kernel_str = "swaption_CumNormalInv";
+		else if (i == 1) kernel_str = "swaption_sim";
 		kernelName = const_cast<char*>(kernel_str.c_str());
 		kernels[i] = clCreateKernel(programs[i], kernelName, &err);
 
@@ -432,6 +448,10 @@ int main(int argc, char *argv[])
 			return EXIT_FAILURE;
 		}
 	}
+
+	// Set work size
+	size_t globalWorkSize = GLOBAL_WORK_SIZE;
+
 
 	// ***** Pre-computations in HJM_Swaption_Blocking *****
 	
@@ -524,11 +544,12 @@ int main(int argc, char *argv[])
 	}
 
 	// Calculate # of simulation iterations per work item
-	int *iter_wi = (int*) malloc(sizeof(int) * GLOBAL_WORK_SIZE);
-	int iter_tot = ceil((double)NUM_TRIALS / (double)BLOCK_SIZE);
+	unsigned int *iter_wi = (unsigned int*) malloc(sizeof(unsigned int) * GLOBAL_WORK_SIZE);
+	unsigned int iter_tot = ceil((double)NUM_TRIALS / (double)BLOCK_SIZE);
 	leftover = iter_tot % GLOBAL_WORK_SIZE;
 	tmp_cnt = floor((double)iter_tot / (double)GLOBAL_WORK_SIZE);
 
+#pragma omp parallel for
 	for (i = 0; i < GLOBAL_WORK_SIZE; i++) {
 		if (i < leftover)
 			iter_wi[i] = tmp_cnt + 1;
@@ -545,36 +566,127 @@ int main(int argc, char *argv[])
 
 	for (ri = 0; ri < ranCnt; ri++) {
 		pdZ[ri] = RanUnif(&lRndSeed); // First generate a random number
-		pdZ[ri] = CumNormalInv(pdZ[ri]); // Then call CumNormalInv on that number
+		//pdZ[ri] = CumNormalInv(pdZ[ri]); // Then call CumNormalInv on that number
 	}
 
-	// ***** Device memory buffers *****
-	
-	// Vector or matrix arguments to HJM_Swaption_Blocking (needs copying)
-	cl_mem cl_pdYield;
-	cl_mem cl_ppdFactors;
+	// Calculate # of random numbers per device
+	unsigned int *ran_dev = (unsigned int*) malloc(sizeof(unsigned int) * dev_cnt);
+	leftover = ranCnt % dev_cnt;
+	tmp_cnt = floor((double)ranCnt / (double)dev_cnt);
 
-	// Prepare per trial data
+	for (i = 0; i < dev_cnt; i++) {
+		if (i < leftover)
+			ran_dev[i] = tmp_cnt + 1;
+		else
+			ran_dev[i] = tmp_cnt;
+	}
+
+	// Calculate # of random numbers per work-item
+	unsigned int *ran_wi = (unsigned int*) malloc(sizeof(unsigned int) * dev_cnt * GLOBAL_WORK_SIZE);
+	for (i = 0; i < dev_cnt; i++) {
+		leftover = ran_dev[i] % GLOBAL_WORK_SIZE;
+		tmp_cnt = floor((double)ran_dev[i] / (double)GLOBAL_WORK_SIZE);
+
+#pragma omp parallel for
+		for (j = 0; j < GLOBAL_WORK_SIZE; j++) {
+			if (j < leftover)
+				ran_wi[GLOBAL_WORK_SIZE * i + j] = tmp_cnt + 1;
+			else
+				ran_wi[GLOBAL_WORK_SIZE * i + j] = tmp_cnt;
+		}
+	}
+
+	// Calculate start & end index of pdZ per work-item
+	unsigned int *ran_wi_sti = (unsigned int*) malloc(sizeof(unsigned int) * dev_cnt * GLOBAL_WORK_SIZE);
+	unsigned int *ran_wi_edi = (unsigned int*) malloc(sizeof(unsigned int) * dev_cnt * GLOBAL_WORK_SIZE);
+
+	unsigned int stIndex1 = 0;
+	unsigned int stIndex2;
+	for (i = 0; i < dev_cnt; i++) {
+		stIndex2 = stIndex1;
+		for (j = 0; j < GLOBAL_WORK_SIZE; j++) {
+			ran_wi_sti[GLOBAL_WORK_SIZE * i + j] = stIndex2;
+			stIndex2 += ran_wi[GLOBAL_WORK_SIZE * i + j];
+			ran_wi_edi[GLOBAL_WORK_SIZE * i + j] = stIndex2 - 1;
+		}
+		stIndex1 += ran_dev[i];
+	}
+
+	// ***** CumNormalInv *****
+
+	// Prepare memory
+	cl_mem cl_pdZ[dev_cnt];
+	cl_mem cl_sti[dev_cnt];
+	cl_mem cl_edi[dev_cnt];
+
+	for (i = 0; i < dev_cnt; i++) {
+#ifdef USE_CPU
+		cl_pdZ[i] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(FTYPE) * ranCnt, pdZ, &err);
+		cl_sti[i] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(unsigned int) * dev_cnt * GLOBAL_WORK_SIZE, ran_wi_sti, &err);
+		cl_edi[i] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(unsigned int) * dev_cnt * GLOBAL_WORK_SIZE, ran_wi_edi, &err);
+#elif USE_GPU
+		cl_pdZ[i] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(FTYPE) * ranCnt, pdZ, &err);
+		cl_sti[i] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(unsigned int) * dev_cnt * GLOBAL_WORK_SIZE, ran_wi_sti, &err);
+		cl_edi[i] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(unsigned int) * dev_cnt * GLOBAL_WORK_SIZE, ran_wi_edi, &err);
+#endif
+	}
+
+	if (err != CL_SUCCESS) {
+		printf("Error: failed to allocate device memory. %d\n", err);
+		return EXIT_FAILURE;
+	}
+
+	// Use all devices
+	for (i = 0; i < dev_cnt; i++) {
+
+		// Set kernel arguments
+		err = clSetKernelArg(kernels[0], 0, sizeof(int), (void*) &globalWorkSize);
+		err |= clSetKernelArg(kernels[0], 1, sizeof(cl_mem), (void*) &cl_pdZ[i]);
+		err |= clSetKernelArg(kernels[0], 2, sizeof(int), (void*) &i);
+		err |= clSetKernelArg(kernels[0], 3, sizeof(cl_mem), (void*) &cl_sti[i]);
+		err |= clSetKernelArg(kernels[0], 4, sizeof(cl_mem), (void*) &cl_edi[i]);
+		
+		if (err != CL_SUCCESS) {
+			printf("Error: failed to set kernel arguments. %d\n", err);
+			return EXIT_FAILURE;
+		}
+
+		// Enqueue kernel
+		err = clEnqueueNDRangeKernel(commands[i], kernels[0], 1, NULL, &globalWorkSize, NULL, 0, NULL, NULL);
+
+		if (err != CL_SUCCESS) {
+			printf("Error: failed to enqueue kernel. %d\n", err);
+			return EXIT_FAILURE;
+		}
+	}
+
+	for (i = 0; i < dev_cnt; i++) {
+		clFinish(commands[i]); // Ensure kernels are finished
+	}
+	
+	// Read pdZ back to host memory
+	
+	// TODO
+
+	// ***** Device memory buffers *****
+
 	cl_mem cl_ppdHJMPath;
 	cl_mem cl_pdForward;
-	cl_mem cl_ppdDrifts;
 	cl_mem cl_pdTotalDrift;
+	cl_mem cl_ppdFactors;
 
 	cl_mem cl_pdDiscountingRatePath;
 	cl_mem cl_pdPayoffDiscountFactors;
+	cl_mem cl_pdexpRes;
 	cl_mem cl_pdSwapRatePath;
 	cl_mem cl_pdSwapDiscountFactors;
 	cl_mem cl_pdSwapPayoffs;
 
-	// Accumulators (X iter_tot)
 	cl_mem cl_dSumSimSwaptionPrice;
 	cl_mem cl_dSumSquareSimSwaptionPrice;
 
-	// ***** Run kernels *****
-
-	// Set work size
-	size_t globalWorkSize = GLOBAL_WORK_SIZE;
-
+	// ***** Run simulation kernels *****
+	
 	// Enqueue kernels for each swaption
 	int swp_cnt;
 	int cur_swp = 0;
@@ -607,6 +719,10 @@ int main(int argc, char *argv[])
 	free(swp_dev);
 	free(iter_wi);
 	free(pdZ);
+	free(ran_dev);
+	free(ran_wi);
+	free(ran_wi_sti);
+	free(ran_wi_edi);
 
 #endif // OpenCL
 
