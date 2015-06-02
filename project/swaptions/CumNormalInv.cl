@@ -1,7 +1,7 @@
 __kernel void swaption_CumNormalInv(
 		int globalWorkSize,
-		__global FTYPE *pdZ,
 		int dev_i,
+		__global FTYPE *pdZ,
 		__global unsigned int *ran_wi_sti,
 		__global unsigned int *ran_wi_edi)
 {

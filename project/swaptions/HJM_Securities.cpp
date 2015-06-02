@@ -44,8 +44,6 @@ using namespace std;
 #include <hooks.h>
 #endif
 
-#define DEBUG 1	// Set if you want debugging outputs
-
 int NUM_TRIALS = DEFAULT_NUM_TRIALS;
 int nThreads = 1;
 int nSwaptions = 1;
@@ -620,12 +618,11 @@ int main(int argc, char *argv[])
 	cl_mem cl_edi[dev_cnt];
 
 	for (i = 0; i < dev_cnt; i++) {
+		cl_pdZ[i] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(FTYPE) * ranCnt, pdZ, &err);
 #ifdef USE_CPU
-		cl_pdZ[i] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(FTYPE) * ranCnt, pdZ, &err);
 		cl_sti[i] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(unsigned int) * dev_cnt * GLOBAL_WORK_SIZE, ran_wi_sti, &err);
 		cl_edi[i] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(unsigned int) * dev_cnt * GLOBAL_WORK_SIZE, ran_wi_edi, &err);
 #elif USE_GPU
-		cl_pdZ[i] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(FTYPE) * ranCnt, pdZ, &err);
 		cl_sti[i] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(unsigned int) * dev_cnt * GLOBAL_WORK_SIZE, ran_wi_sti, &err);
 		cl_edi[i] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(unsigned int) * dev_cnt * GLOBAL_WORK_SIZE, ran_wi_edi, &err);
 #endif
@@ -636,13 +633,15 @@ int main(int argc, char *argv[])
 		return EXIT_FAILURE;
 	}
 
-	// Use all devices
+	// CumNormalInv with all OpenCL devices
+	unsigned int buf_ofs = 0; // Offset in buffer
+	unsigned int host_ofs = 0; // Offset in host memory
 	for (i = 0; i < dev_cnt; i++) {
 
 		// Set kernel arguments
 		err = clSetKernelArg(kernels[0], 0, sizeof(int), (void*) &globalWorkSize);
-		err |= clSetKernelArg(kernels[0], 1, sizeof(cl_mem), (void*) &cl_pdZ[i]);
-		err |= clSetKernelArg(kernels[0], 2, sizeof(int), (void*) &i);
+		err |= clSetKernelArg(kernels[0], 1, sizeof(int), (void*) &i);
+		err |= clSetKernelArg(kernels[0], 2, sizeof(cl_mem), (void*) &cl_pdZ[i]);
 		err |= clSetKernelArg(kernels[0], 3, sizeof(cl_mem), (void*) &cl_sti[i]);
 		err |= clSetKernelArg(kernels[0], 4, sizeof(cl_mem), (void*) &cl_edi[i]);
 		
@@ -658,15 +657,24 @@ int main(int argc, char *argv[])
 			printf("Error: failed to enqueue kernel. %d\n", err);
 			return EXIT_FAILURE;
 		}
+
+		// Read pdZ back to host memory
+		err = clEnqueueReadBuffer(commands[i], cl_pdZ[i], CL_TRUE, (size_t) buf_ofs, (size_t) (ran_dev[i] * sizeof(FTYPE)), pdZ + host_ofs, 0, NULL, NULL); // TODO: make it non-blocking
+		
+		if (err != CL_SUCCESS) {
+			printf("Error: failed to read buffer. %d\n", err);
+			return EXIT_FAILURE;
+		}
+
+		buf_ofs += ran_dev[i] * sizeof(FTYPE);
+		host_ofs += ran_dev[i];
+
 	}
 
+	// Ensure kernel completion
 	for (i = 0; i < dev_cnt; i++) {
-		clFinish(commands[i]); // Ensure kernels are finished
+		clFinish(commands[i]);
 	}
-	
-	// Read pdZ back to host memory
-	
-	// TODO
 
 	// ***** Device memory buffers *****
 
