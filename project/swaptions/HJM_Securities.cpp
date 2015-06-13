@@ -267,9 +267,9 @@ int main(int argc, char *argv[])
 	clock_gettime(CLOCK_MONOTONIC, &start);
 
 #if defined(USE_CPU) || defined(USE_GPU)
-	
+
 	// ******************** OpenCL ********************
-	
+
 	// ***** Preparation *****
 
 	int err;
@@ -333,9 +333,11 @@ int main(int argc, char *argv[])
 
 	size_t max_work_group_size;
 	cl_ulong local_mem_size;
+	size_t max_param_size;
 
 	err = clGetDeviceInfo(device_ids[0], CL_DEVICE_MAX_WORK_GROUP_SIZE, sizeof(size_t), &max_work_group_size, NULL);
 	err |= clGetDeviceInfo(device_ids[0], CL_DEVICE_LOCAL_MEM_SIZE, sizeof(cl_ulong), &local_mem_size, NULL);
+	err |= clGetDeviceInfo(device_ids[0], CL_DEVICE_MAX_PARAMETER_SIZE, sizeof(size_t), &max_param_size, NULL);
 
 	if (err != CL_SUCCESS) {
 		printf("Error: failed to get device info. %d\n", err);
@@ -344,6 +346,7 @@ int main(int argc, char *argv[])
 
 	printf("Max work group size: %zu\n", max_work_group_size);
 	printf("Local memory size: %lu\n\n", local_mem_size);
+	printf("Max parameter size: %zu\n", max_param_size);
 #endif
 
 	// Create compute context
@@ -373,7 +376,7 @@ int main(int argc, char *argv[])
 	}
 
 	// KERNEL
-	strcpy(fileName[0], "./CumNormalInv.cl");
+	strcpy(fileName[0], "./RanGen.cl");
 	strcpy(fileName[1], "./sim.cl");
 	//
 
@@ -436,7 +439,7 @@ int main(int argc, char *argv[])
 
 	for (i = 0; i < KCNT; i++) {
 		// Set kernel name (KERNEL)
-		if (i == 0) kernel_str = "swaption_CumNormalInv";
+		if (i == 0) kernel_str = "swaption_RanGen";
 		else if (i == 1) kernel_str = "swaption_sim";
 		kernelName = const_cast<char*>(kernel_str.c_str());
 		kernels[i] = clCreateKernel(programs[i], kernelName, &err);
@@ -452,12 +455,13 @@ int main(int argc, char *argv[])
 
 
 	// ***** Pre-computations in HJM_Swaption_Blocking *****
-	
+
 	FTYPE dCompounding = swaptions[0].dCompounding;
 	FTYPE dMaturity = swaptions[0].dMaturity;
 	FTYPE dTenor = swaptions[0].dTenor;
 	FTYPE dPaymentInterval = swaptions[0].dPaymentInterval;
 	FTYPE ddelt = (FTYPE)(dYears/iN);
+	FTYPE sqrt_ddelt = sqrt(ddelt);
 	int iFreqRatio = (int)(dPaymentInterval/ddelt + 0.5);
 	FTYPE *dStrikeCont = (FTYPE*)malloc(sizeof(FTYPE) * nSwaptions); // Differ
 	int iSwapVectorLength = (int)(iN - dMaturity/ddelt + 0.5);
@@ -474,41 +478,41 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	FTYPE **pdSwapPayoffs = (FTYPE**) malloc(sizeof(FTYPE*) * nSwaptions);
-	FTYPE **pdForward = (FTYPE**) malloc(sizeof(FTYPE*) * nSwaptions);
-	FTYPE **pdTotalDrift = (FTYPE**) malloc(sizeof(FTYPE*) * nSwaptions);
-	FTYPE **ppdDrifts;
+	FTYPE *pdSwapPayoffs = (FTYPE*) malloc(sizeof(FTYPE) * iSwapVectorLength * nSwaptions);
+	FTYPE *pdForward = (FTYPE*) malloc(sizeof(FTYPE) * iN * nSwaptions);
+	FTYPE *pdTotalDrift = (FTYPE*) malloc(sizeof(FTYPE) * (iN-1) * nSwaptions);
+	FTYPE **ppdDrifts; // Temporary so can be kept a matrix
 	int l;
 	FTYPE dSumVol = 0.0;
 
 	for (i = 0; i < nSwaptions; i++) {
 		// Store swap payoffs
-		pdSwapPayoffs[i] = (FTYPE*) malloc(sizeof(FTYPE) * iSwapVectorLength);
+		//pdSwapPayoffs[i] = (FTYPE*) malloc(sizeof(FTYPE) * iSwapVectorLength);
 
 		for (j = 0; j <= iSwapVectorLength - 1; ++j)
-			pdSwapPayoffs[i][j] = 0.0;
+			pdSwapPayoffs[iSwapVectorLength * i + j] = 0.0;
 		for (j = iFreqRatio; j <= iSwapTimePoints; j+=iFreqRatio) {
 			if (j != iSwapTimePoints)
-				pdSwapPayoffs[i][j] = exp(dStrikeCont[i]*dPaymentInterval) - 1;
+				pdSwapPayoffs[iSwapVectorLength * i + j] = exp(dStrikeCont[i]*dPaymentInterval) - 1;
 			if (j == iSwapTimePoints)
-				pdSwapPayoffs[i][j] = exp(dStrikeCont[i]*dPaymentInterval);
+				pdSwapPayoffs[iSwapVectorLength * i + j] = exp(dStrikeCont[i]*dPaymentInterval);
 		}
 
 		// Generate forward curve
-		pdForward[i] = (FTYPE*) malloc(sizeof(FTYPE) * iN);
+		//pdForward[i] = (FTYPE*) malloc(sizeof(FTYPE) * iN);
 
-		pdForward[i][0] = swaptions[i].pdYield[0];
+		pdForward[iN * i] = swaptions[i].pdYield[0];
 		for (j = 1; j <= iN-1; ++j) {
-			pdForward[i][j] = (j+1)*swaptions[i].pdYield[j] - j*swaptions[i].pdYield[j-1];
+			pdForward[iN * i + j] = (j+1)*swaptions[i].pdYield[j] - j*swaptions[i].pdYield[j-1];
 		}
 
 		// Compute drifts
 		ppdDrifts = dmatrix(0, iFactors-1, 0, iN-2);
-		pdTotalDrift[i] = (FTYPE*) malloc(sizeof(FTYPE) * (iN-1));
+		//pdTotalDrift[i] = (FTYPE*) malloc(sizeof(FTYPE) * (iN-1));
 
 		for (j = 0; j <= iFactors-1; ++j)
 			ppdDrifts[j][0] = 0.5*ddelt*(swaptions[i].ppdFactors[j][0])*(swaptions[i].ppdFactors[j][0]);
-		
+
 		for (j = 0; j <= iFactors-1; ++j)
 			for (k = 1; k <= iN-2; ++k) {
 				ppdDrifts[j][k] = 0;
@@ -521,9 +525,9 @@ int main(int argc, char *argv[])
 			}
 
 		for (j = 0; j <= iN-2; ++j) {
-			pdTotalDrift[i][j] = 0;
+			pdTotalDrift[(iN-1) * i + j] = 0;
 			for (k = 0; k <= iFactors-1; ++k)
-				pdTotalDrift[i][j] += ppdDrifts[k][j];
+				pdTotalDrift[(iN-1) * i + j] += ppdDrifts[k][j];
 		}
 
 		free_dmatrix(ppdDrifts, 0, iFactors-1, 0, iN-2);
@@ -555,17 +559,30 @@ int main(int argc, char *argv[])
 			iter_wi[i] = tmp_cnt;
 	}
 
+	// Calculate simulation iteration indices per work item
+	unsigned int *iter_wi_sti = (unsigned int*) malloc(sizeof(unsigned int) * GLOBAL_WORK_SIZE);
+	unsigned int *iter_wi_edi = (unsigned int*) malloc(sizeof(unsigned int) * GLOBAL_WORK_SIZE);
+
+	unsigned int stIndex1 = 0;
+	for (i = 0; i < GLOBAL_WORK_SIZE; i++) {
+		iter_wi_sti[i] = stIndex1;
+		stIndex1 += iter_wi[i];
+		iter_wi_edi[i] = stIndex1 - 1;
+	}
+
 	// Generate pdZ for use in HJM_SimPath_Forward_Blocking
 	// (same across all swaptions)
 	long lRndSeed = 100;
-	unsigned int ranCnt = iter_tot * BLOCK_SIZE * (iN-1) * iFactors;
+	unsigned int ranCnt = iFactors * iN * BLOCK_SIZE * iter_tot;
 	unsigned int ri;
 	FTYPE *pdZ = (FTYPE*) malloc(sizeof(FTYPE) * ranCnt);
 
-	for (ri = 0; ri < ranCnt; ri++) {
-		pdZ[ri] = RanUnif(&lRndSeed); // First generate a random number
-		//pdZ[ri] = CumNormalInv(pdZ[ri]); // Then call CumNormalInv on that number
-	}
+	/*
+	   for (ri = 0; ri < ranCnt; ri++) {
+	   pdZ[ri] = RanUnif(&lRndSeed); // First generate a random number
+	   pdZ[ri] = CumNormalInv(pdZ[ri]); // Then call CumNormalInv on that number
+	   }
+	   */
 
 	// Calculate # of random numbers per device
 	unsigned int *ran_dev = (unsigned int*) malloc(sizeof(unsigned int) * dev_cnt);
@@ -598,7 +615,7 @@ int main(int argc, char *argv[])
 	unsigned int *ran_wi_sti = (unsigned int*) malloc(sizeof(unsigned int) * dev_cnt * GLOBAL_WORK_SIZE);
 	unsigned int *ran_wi_edi = (unsigned int*) malloc(sizeof(unsigned int) * dev_cnt * GLOBAL_WORK_SIZE);
 
-	unsigned int stIndex1 = 0;
+	stIndex1 = 0;
 	unsigned int stIndex2;
 	for (i = 0; i < dev_cnt; i++) {
 		stIndex2 = stIndex1;
@@ -610,7 +627,7 @@ int main(int argc, char *argv[])
 		stIndex1 += ran_dev[i];
 	}
 
-	// ***** CumNormalInv *****
+	// ***** RanUnif & CumNormalInv *****
 
 	// Prepare memory
 	cl_mem cl_pdZ[dev_cnt];
@@ -633,18 +650,18 @@ int main(int argc, char *argv[])
 		return EXIT_FAILURE;
 	}
 
-	// CumNormalInv with all OpenCL devices
+	// Random number generation with all OpenCL devices
 	unsigned int buf_ofs = 0; // Offset in buffer
 	unsigned int host_ofs = 0; // Offset in host memory
 	for (i = 0; i < dev_cnt; i++) {
-
 		// Set kernel arguments
 		err = clSetKernelArg(kernels[0], 0, sizeof(int), (void*) &globalWorkSize);
 		err |= clSetKernelArg(kernels[0], 1, sizeof(int), (void*) &i);
-		err |= clSetKernelArg(kernels[0], 2, sizeof(cl_mem), (void*) &cl_pdZ[i]);
-		err |= clSetKernelArg(kernels[0], 3, sizeof(cl_mem), (void*) &cl_sti[i]);
-		err |= clSetKernelArg(kernels[0], 4, sizeof(cl_mem), (void*) &cl_edi[i]);
-		
+		err |= clSetKernelArg(kernels[0], 2, sizeof(long), (void*) &lRndSeed);
+		err |= clSetKernelArg(kernels[0], 3, sizeof(cl_mem), (void*) &cl_pdZ[i]);
+		err |= clSetKernelArg(kernels[0], 4, sizeof(cl_mem), (void*) &cl_sti[i]);
+		err |= clSetKernelArg(kernels[0], 5, sizeof(cl_mem), (void*) &cl_edi[i]);
+
 		if (err != CL_SUCCESS) {
 			printf("Error: failed to set kernel arguments. %d\n", err);
 			return EXIT_FAILURE;
@@ -660,7 +677,7 @@ int main(int argc, char *argv[])
 
 		// Read pdZ back to host memory
 		err = clEnqueueReadBuffer(commands[i], cl_pdZ[i], CL_TRUE, (size_t) buf_ofs, (size_t) (ran_dev[i] * sizeof(FTYPE)), pdZ + host_ofs, 0, NULL, NULL); // TODO: make it non-blocking
-		
+
 		if (err != CL_SUCCESS) {
 			printf("Error: failed to read buffer. %d\n", err);
 			return EXIT_FAILURE;
@@ -668,7 +685,6 @@ int main(int argc, char *argv[])
 
 		buf_ofs += ran_dev[i] * sizeof(FTYPE);
 		host_ofs += ran_dev[i];
-
 	}
 
 	// Ensure kernel completion
@@ -676,25 +692,82 @@ int main(int argc, char *argv[])
 		clFinish(commands[i]);
 	}
 
-	// ***** Device memory buffers *****
+	// ***** Simulation *****
 
-	cl_mem cl_ppdHJMPath;
-	cl_mem cl_pdForward;
-	cl_mem cl_pdTotalDrift;
-	cl_mem cl_ppdFactors;
+	// Convert ppdFactors into vectors
+	FTYPE *gppdFactors = (FTYPE*) malloc(sizeof(FTYPE) * iFactors * (iN-1) * nSwaptions);
 
-	cl_mem cl_pdDiscountingRatePath;
-	cl_mem cl_pdPayoffDiscountFactors;
-	cl_mem cl_pdexpRes;
-	cl_mem cl_pdSwapRatePath;
-	cl_mem cl_pdSwapDiscountFactors;
-	cl_mem cl_pdSwapPayoffs;
+#pragma omp parallel for private(j,k)
+	for (i = 0; i < nSwaptions; i++) {
+		for (j = 0; j < iFactors; j++) {
+			for (k = 0; k < iN-1; k++) {
+				gppdFactors[iFactors * (iN-1) * i + (iN-1) * j + k] = swaptions[i].ppdFactors[j][k];
+			}
+		}
+	}
 
-	cl_mem cl_dSumSimSwaptionPrice;
-	cl_mem cl_dSumSquareSimSwaptionPrice;
+	// Device memory objects
+	cl_mem cl_ppdHJMPath[nSwaptions];
+	cl_mem cl_pdDiscountingRatePath[nSwaptions];
+	cl_mem cl_pdPayoffDiscountFactors[nSwaptions];
+	cl_mem cl_pdexpRes[nSwaptions];
+	cl_mem cl_pdSwapRatePath[nSwaptions];
+	cl_mem cl_pdSwapDiscountFactors[nSwaptions];
 
-	// ***** Run simulation kernels *****
-	
+	cl_mem cl_pdForward[nSwaptions];
+	cl_mem cl_pdTotalDrift[nSwaptions];
+	cl_mem cl_ppdFactors[nSwaptions];
+	cl_mem cl_gpdZ;
+	cl_mem cl_pdSwapPayoffs[nSwaptions];
+	cl_mem cl_dSumSimSwaptionPrice[nSwaptions];
+	cl_mem cl_dSumSquareSimSwaptionPrice[nSwaptions];
+
+	cl_mem cl_iter_wi_sti;
+	cl_mem cl_iter_wi_edi;
+
+	FTYPE *acc_dSumSimSwaptionPrice = (FTYPE*) malloc(sizeof(FTYPE) * GLOBAL_WORK_SIZE * nSwaptions);
+	FTYPE *acc_dSumSquareSimSwaptionPrice = (FTYPE*) malloc(sizeof(FTYPE) * GLOBAL_WORK_SIZE * nSwaptions);
+
+	// Create buffers (common across all swaptions)
+#ifdef USE_CPU
+	cl_gpdZ = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(FTYPE) * ranCnt, pdZ, &err);
+	cl_iter_wi_sti = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(unsigned int) * GLOBAL_WORK_SIZE, iter_wi_sti, &err);
+	cl_iter_wi_edi = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(unsigned int) * GLOBAL_WORK_SIZE, iter_wi_edi, &err);
+#elif USE_GPU
+	cl_gpdZ = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(FTYPE) * ranCnt, pdZ, &err);
+	cl_iter_wi_sti = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(unsigned int) * GLOBAL_WORK_SIZE, iter_wi_sti, &err);
+	cl_iter_wi_edi = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(unsigned int) * GLOBAL_WORK_SIZE, iter_wi_edi, &err);
+#endif
+
+	// Set kernel arguments (common across all swaptions)
+	int blk_size = BLOCK_SIZE;
+	/*	
+		err = clSetKernelArg(kernels[0], 0, sizeof(FTYPE) * iN * iN * BLOCK_SIZE * GLOBAL_WORK_SIZE, NULL); // ppdHJMPath
+		err |= clSetKernelArg(kernels[0], 1, sizeof(int), (void*) &iN);
+		err |= clSetKernelArg(kernels[0], 2, sizeof(int), (void*) &iFactors);
+		err |= clSetKernelArg(kernels[0], 3, sizeof(FTYPE), (void*) &dYears);
+		err |= clSetKernelArg(kernels[0], 4, sizeof(int), (void*) &blk_size);
+		err |= clSetKernelArg(kernels[0], 5, sizeof(FTYPE), (void*) &ddelt);
+		err |= clSetKernelArg(kernels[0], 6, sizeof(FTYPE), (void*) &sqrt_ddelt);
+		err |= clSetKernelArg(kernels[0], 7, sizeof(int), (void*) &iSwapVectorLength);
+		err |= clSetKernelArg(kernels[0], 8, sizeof(int), (void*) &iSwapStartTimeIndex);
+		err |= clSetKernelArg(kernels[0], 9, sizeof(FTYPE), (void*) &dSwapVectorYears);
+		err |= clSetKernelArg(kernels[0], 13, sizeof(cl_mem), (void*) &cl_gpdZ);
+		err |= clSetKernelArg(kernels[0], 14, sizeof(FTYPE) * iN * BLOCK_SIZE * GLOBAL_WORK_SIZE, NULL); // pdDiscountingRatePath
+		err |= clSetKernelArg(kernels[0], 15, sizeof(FTYPE) * iN * BLOCK_SIZE * GLOBAL_WORK_SIZE, NULL); // pdPayoffDiscountFactors
+		err |= clSetKernelArg(kernels[0], 16, sizeof(FTYPE) * (iN-1) * BLOCK_SIZE * GLOBAL_WORK_SIZE, NULL); // pdexpRes
+		err |= clSetKernelArg(kernels[0], 17, sizeof(FTYPE) * iSwapVectorLength * BLOCK_SIZE * GLOBAL_WORK_SIZE, NULL); // pdSwapRatePath
+		err |= clSetKernelArg(kernels[0], 18, sizeof(FTYPE) * iSwapVectorLength * BLOCK_SIZE * GLOBAL_WORK_SIZE, NULL); // pdSwapDiscountFactors
+		err |= clSetKernelArg(kernels[0], 22, sizeof(cl_mem), (void*) &cl_iter_wi_sti);
+		err |= clSetKernelArg(kernels[0], 23, sizeof(cl_mem), (void*) &cl_iter_wi_edi);
+
+		if (err != CL_SUCCESS) {
+		printf("Error: failed to set kernel arguments. %d\n", err);
+		return EXIT_FAILURE;
+		}
+
+		printf("HELLO!!!!!!!!!!!!\n"); // DDD
+		*/	
 	// Enqueue kernels for each swaption
 	int swp_cnt;
 	int cur_swp = 0;
@@ -705,27 +778,115 @@ int main(int argc, char *argv[])
 		while (1) {
 			if (swp_cnt >= swp_dev[i])
 				break;
-			
-			// Enqueue swaption
-			
+
+			// Create buffers (unique per swaption)
+			cl_ppdHJMPath[cur_swp] = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(FTYPE) * iN * iN * BLOCK_SIZE * GLOBAL_WORK_SIZE, NULL, &err);
+			cl_pdDiscountingRatePath[cur_swp] = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(FTYPE) * iN * BLOCK_SIZE * GLOBAL_WORK_SIZE, NULL, &err);
+			cl_pdPayoffDiscountFactors[cur_swp] = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(FTYPE) * iN * BLOCK_SIZE * GLOBAL_WORK_SIZE, NULL, &err);
+			cl_pdexpRes[cur_swp] = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(FTYPE) * (iN-1) * BLOCK_SIZE * GLOBAL_WORK_SIZE, NULL, &err);
+			cl_pdSwapRatePath[cur_swp] = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(FTYPE) * iSwapVectorLength * BLOCK_SIZE * GLOBAL_WORK_SIZE, NULL, &err);
+			cl_pdSwapDiscountFactors[cur_swp] = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(FTYPE) * iSwapVectorLength * BLOCK_SIZE * GLOBAL_WORK_SIZE, NULL, &err);
+
+#ifdef USE_CPU
+			cl_pdForward[cur_swp] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(FTYPE) * iN, pdForward + iN * cur_swp, &err);
+			cl_pdTotalDrift[cur_swp] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(FTYPE) * (iN-1), pdTotalDrift + (iN-1) * cur_swp, &err);
+			cl_ppdFactors[cur_swp] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(FTYPE) * iFactors * (iN-1), gppdFactors + iFactors * (iN-1) * cur_swp, &err);
+			cl_pdSwapPayoffs[cur_swp] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(FTYPE) * iSwapVectorLength, pdSwapPayoffs + iSwapVectorLength * cur_swp, &err);
+			cl_dSumSimSwaptionPrice[cur_swp] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(FTYPE) * GLOBAL_WORK_SIZE, acc_dSumSimSwaptionPrice + GLOBAL_WORK_SIZE * cur_swp, &err);
+			cl_dSumSquareSimSwaptionPrice[cur_swp] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(FTYPE) * GLOBAL_WORK_SIZE, acc_dSumSquareSimSwaptionPrice + GLOBAL_WORK_SIZE * cur_swp, &err);
+#elif USE_GPU
+			cl_pdForward[cur_swp] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(FTYPE) * iN, pdForward + iN * cur_swp, &err);
+			cl_pdTotalDrift[cur_swp] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(FTYPE) * (iN-1), pdTotalDrift + (iN-1) * cur_swp, &err);
+			cl_ppdFactors[cur_swp] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(FTYPE) * iFactors * (iN-1), gppdFactors + iFactors * (iN-1) * cur_swp, &err);
+			cl_pdSwapPayoffs[cur_swp] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(FTYPE) * iSwapVectorLength, pdSwapPayoffs + iSwapVectorLength * cur_swp, &err);
+			cl_dSumSimSwaptionPrice[cur_swp] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(FTYPE) * GLOBAL_WORK_SIZE, acc_dSumSimSwaptionPrice + GLOBAL_WORK_SIZE * cur_swp, &err);
+			cl_dSumSquareSimSwaptionPrice[cur_swp] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(FTYPE) * GLOBAL_WORK_SIZE, acc_dSumSquareSimSwaptionPrice + GLOBAL_WORK_SIZE * cur_swp, &err);
+#endif
+
+			// Set kernel arguments (unique per swaption)
+			err = clSetKernelArg(kernels[1], 0, sizeof(cl_mem), (void*) &cl_ppdHJMPath[cur_swp]);
+			err |= clSetKernelArg(kernels[1], 1, sizeof(int), (void*) &iN);
+			err |= clSetKernelArg(kernels[1], 2, sizeof(int), (void*) &iFactors);
+			err |= clSetKernelArg(kernels[1], 3, sizeof(FTYPE), (void*) &dYears);
+			err |= clSetKernelArg(kernels[1], 4, sizeof(int), (void*) &blk_size);
+			err |= clSetKernelArg(kernels[1], 5, sizeof(FTYPE), (void*) &ddelt);
+			err |= clSetKernelArg(kernels[1], 6, sizeof(FTYPE), (void*) &sqrt_ddelt);
+			err |= clSetKernelArg(kernels[1], 7, sizeof(int), (void*) &iSwapVectorLength);
+			err |= clSetKernelArg(kernels[1], 8, sizeof(int), (void*) &iSwapStartTimeIndex);
+			err |= clSetKernelArg(kernels[1], 9, sizeof(FTYPE), (void*) &dSwapVectorYears);
+			err |= clSetKernelArg(kernels[1], 10, sizeof(cl_mem), (void*) &cl_pdForward[cur_swp]);
+			err |= clSetKernelArg(kernels[1], 11, sizeof(cl_mem), (void*) &cl_pdTotalDrift[cur_swp]);
+			err |= clSetKernelArg(kernels[1], 12, sizeof(cl_mem), (void*) &cl_ppdFactors[cur_swp]);
+			err |= clSetKernelArg(kernels[1], 13, sizeof(cl_mem), (void*) &cl_gpdZ);
+			err |= clSetKernelArg(kernels[1], 14, sizeof(cl_mem), (void*) &cl_pdDiscountingRatePath[cur_swp]);
+			err |= clSetKernelArg(kernels[1], 15, sizeof(cl_mem), (void*) &cl_pdPayoffDiscountFactors[cur_swp]);
+			err |= clSetKernelArg(kernels[1], 16, sizeof(cl_mem), (void*) &cl_pdexpRes[cur_swp]);
+			err |= clSetKernelArg(kernels[1], 17, sizeof(cl_mem), (void*) &cl_pdSwapRatePath[cur_swp]);
+			err |= clSetKernelArg(kernels[1], 18, sizeof(cl_mem), (void*) &cl_pdSwapDiscountFactors[cur_swp]);
+			err |= clSetKernelArg(kernels[1], 19, sizeof(cl_mem), (void*) &cl_pdSwapPayoffs[cur_swp]);
+			err |= clSetKernelArg(kernels[1], 20, sizeof(cl_mem), (void*) &cl_dSumSimSwaptionPrice[cur_swp]);
+			err |= clSetKernelArg(kernels[1], 21, sizeof(cl_mem), (void*) &cl_dSumSquareSimSwaptionPrice[cur_swp]);
+			err |= clSetKernelArg(kernels[1], 22, sizeof(cl_mem), (void*) &cl_iter_wi_sti);
+			err |= clSetKernelArg(kernels[1], 23, sizeof(cl_mem), (void*) &cl_iter_wi_edi);
+
+			if (err != CL_SUCCESS) {
+				printf("Error: failed to set kernel arguments. %d\n", err);
+				return EXIT_FAILURE;
+			}
+
+			// Enqueue kernel
+			err = clEnqueueNDRangeKernel(commands[i], kernels[0], 1, NULL, &globalWorkSize, NULL, 0, NULL, NULL);
+
+			if (err != CL_SUCCESS) {
+			printf("Error: failed to enqueue kernel. %d\n", err);
+			return EXIT_FAILURE;
+			}
+
+			// Read prices back to host memory
+			err = clEnqueueReadBuffer(commands[i], cl_dSumSimSwaptionPrice[cur_swp], CL_TRUE, 0, (size_t) (sizeof(FTYPE) * GLOBAL_WORK_SIZE), acc_dSumSimSwaptionPrice + GLOBAL_WORK_SIZE * cur_swp, 0, NULL, NULL); // TODO: make it non-blocking
+			err |= clEnqueueReadBuffer(commands[i], cl_dSumSquareSimSwaptionPrice[cur_swp], CL_TRUE, 0, (size_t) (sizeof(FTYPE) * GLOBAL_WORK_SIZE), acc_dSumSquareSimSwaptionPrice + GLOBAL_WORK_SIZE * cur_swp, 0, NULL, NULL); // TODO: make it non-blocking
+
+			if (err != CL_SUCCESS) {
+			printf("Error: failed to read buffer. %d\n", err);
+			return EXIT_FAILURE;
+			}
+
 			swp_cnt++;
 			cur_swp++;
 		}
 	}
 
+	// Ensure kernel completion
+	for (i = 0; i < dev_cnt; i++) {
+		clFinish(commands[i]);
+	}
+
+	// Reduce prices TODO: too heavy?
+	FTYPE fin_dSumSimSwaptionPrice[nSwaptions];
+	FTYPE fin_dSumSquareSimSwaptionPrice[nSwaptions];
+
+#pragma omp parallel for private(j)
+	for (i = 0; i < nSwaptions; i++) {
+		fin_dSumSimSwaptionPrice[i] = 0.0;
+		fin_dSumSquareSimSwaptionPrice[i] = 0.0;
+		for (j = 0; j < GLOBAL_WORK_SIZE; j++) {
+			fin_dSumSimSwaptionPrice[i] += acc_dSumSimSwaptionPrice[GLOBAL_WORK_SIZE * i + j];
+			fin_dSumSquareSimSwaptionPrice[i] += acc_dSumSquareSimSwaptionPrice[GLOBAL_WORK_SIZE * i + j];
+		}
+		swaptions[i].dSimSwaptionMeanPrice = fin_dSumSimSwaptionPrice[i] / NUM_TRIALS;
+		swaptions[i].dSimSwaptionStdError = sqrt((fin_dSumSimSwaptionPrice[i]-fin_dSumSimSwaptionPrice[i]*fin_dSumSimSwaptionPrice[i]/NUM_TRIALS)/(NUM_TRIALS-1.0))/sqrt((FTYPE)NUM_TRIALS);
+	}
 
 	// ***** Free *****
-	for (i = 0; i < nSwaptions; i++) {
-		free(pdSwapPayoffs[i]);
-		free(pdForward[i]);
-		free(pdTotalDrift[i]);
-	}
-	free(pdSwapPayoffs);
 	free(pdForward);
 	free(pdTotalDrift);
+	free(pdSwapPayoffs);
+	free(gppdFactors);
 	free(dStrikeCont);
 	free(swp_dev);
 	free(iter_wi);
+	free(iter_wi_sti);
+	free(iter_wi_edi);
 	free(pdZ);
 	free(ran_dev);
 	free(ran_wi);

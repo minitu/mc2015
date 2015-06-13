@@ -1,6 +1,7 @@
-__kernel void swaption_CumNormalInv(
+__kernel void swaption_RanGen(
 		int globalWorkSize,
 		int dev_i,
+		long lRndSeed,
 		__global FTYPE *pdZ,
 		__global unsigned int *ran_wi_sti,
 		__global unsigned int *ran_wi_edi)
@@ -35,16 +36,27 @@ __kernel void swaption_CumNormalInv(
 		0.0000003960315187
 	};
 
-	int i;
+	unsigned int i;
+	long s = lRndSeed;
+	long ix, k1;
 	FTYPE x, r, u;
 	
 	// Get start & end indices of pdZ
-	int stIndex = ran_wi_sti[globalWorkSize * dev_i + global_id];
-	int edIndex = ran_wi_edi[globalWorkSize * dev_i + global_id];
+	unsigned int stIndex = ran_wi_sti[globalWorkSize * dev_i + global_id];
+	unsigned int edIndex = ran_wi_edi[globalWorkSize * dev_i + global_id];
 
 	for (i = stIndex; i <= edIndex; i++) {
-		u = pdZ[i];
 
+		// RanUnif
+		ix = s + (long)i;
+		ix *= 1513517L;
+		ix %= 2147483647L;
+		k1 = ix/127773L;
+		ix = 16807L*( ix - k1*127773L ) - k1 * 2836L;
+		if (ix < 0) ix = ix + 2147483647L;
+		u = (ix * 4.656612875e-10);
+
+		// CumNormalInv
 		x = u - 0.5;
 		if (fabs(x) < 0.42) {
 			r = x * x;
