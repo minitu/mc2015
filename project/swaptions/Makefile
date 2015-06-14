@@ -1,4 +1,4 @@
-DEF = -DDEBUG
+DEF =
 INCLUDE = -lrt
 
 EXEC = swaptions 
@@ -14,25 +14,21 @@ ifdef version
   endif
   ifeq "$(version)" "cpu"
     DEF := $(DEF) -DUSE_CPU
-    LIBS := $(LIBS) -lOpenCL -lgomp
-    CXXFLAGS := $(CXXFLAGS) -fopenmp
+    LIBS := $(LIBS) -lOpenCL
   endif
   ifeq "$(version)" "gpu"
     DEF := $(DEF) -DUSE_GPU
-    LIBS := $(LIBS) -lOpenCL -lgomp
-    CXXFLAGS := $(CXXFLAGS) -fopenmp
+    LIBS := $(LIBS) -lOpenCL
   endif
   ifeq "$(version)" "mpi"
     CXX := mpicxx
     DEF := $(DEF) -DUSE_MPI
-    LIBS := $(LIBS) -lOpenCL -lgomp
-    CXXFLAGS := $(CXXFLAGS) -fopenmp
+    LIBS := $(LIBS) -lOpenCL
   endif
   ifeq "$(version)" "snucl"
     CXX := mpicxx
     DEF := $(DEF) -DUSE_SNUCL
-    LIBS := $(LIBS) -lOpenCL -lgomp
-    CXXFLAGS := $(CXXFLAGS) -fopenmp
+    LIBS := $(LIBS) -lOpenCL
   endif
 endif
 

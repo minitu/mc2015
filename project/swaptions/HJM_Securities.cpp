@@ -31,9 +31,6 @@ tbb::cache_aligned_allocator<parm> memory_parm;
 
 #if (defined(USE_CPU) || defined(USE_GPU)) || (defined(USE_MPI) || defined(USE_SNUCL))
 #include <CL/opencl.h>
-#ifdef _OPENMP
-#include <omp.h>
-#endif // OpenMP
 #ifdef USE_MPI
 #include "mpi.h"
 #endif // MPI
@@ -335,7 +332,7 @@ int main(int argc, char *argv[])
 	cl_uint dev_cnt;
 #ifdef USE_CPU
 	err = clGetDeviceIDs(platform_ids[0], CL_DEVICE_TYPE_CPU, 100, device_ids, &dev_cnt);
-#elif USE_GPU
+#else
 	err = clGetDeviceIDs(platform_ids[0], CL_DEVICE_TYPE_GPU, 100, device_ids, &dev_cnt);
 #endif // Compute devices
 
@@ -465,6 +462,29 @@ int main(int argc, char *argv[])
 	// Set work size
 	size_t globalWorkSize = GLOBAL_WORK_SIZE;
 
+#ifdef USE_MPI
+	// Calculate # of swaptions per node
+	int swp_node;
+	int swp_node_sti, swp_node_edi;
+	int tmp_index = 0;
+	int mpi_leftover = nSwaptions % comm_size;
+	int mpi_tmp_cnt = floor((double)nSwaptions / (double)comm_size);
+
+	for (i = 0; i < comm_size; i++) {
+		if (i == comm_rank)
+			swp_node_sti = tmp_index;
+
+		if (i < mpi_leftover)
+			tmp_index += mpi_tmp_cnt + 1;
+		else
+			tmp_index += mpi_tmp_cnt;
+
+		if (i == comm_rank)
+			swp_node_edi = tmp_index - 1;
+	}
+	
+	swp_node = swp_node_edi - swp_node_sti + 1;
+#endif
 
 	// ***** Pre-computations in HJM_Swaption_Blocking *****
 
@@ -475,14 +495,17 @@ int main(int argc, char *argv[])
 	FTYPE ddelt = (FTYPE)(dYears/iN);
 	FTYPE sqrt_ddelt = sqrt(ddelt);
 	int iFreqRatio = (int)(dPaymentInterval/ddelt + 0.5);
-	FTYPE *dStrikeCont = (FTYPE*)malloc(sizeof(FTYPE) * nSwaptions); // Differ
+	FTYPE *dStrikeCont = (FTYPE*)malloc(sizeof(FTYPE) * nSwaptions);
 	int iSwapVectorLength = (int)(iN - dMaturity/ddelt + 0.5);
 	int iSwapStartTimeIndex = (int)(dMaturity/ddelt + 0.5);
 	int iSwapTimePoints = (int)(dTenor/ddelt + 0.5);
 	FTYPE dSwapVectorYears = (FTYPE)(iSwapVectorLength*ddelt);
 
-//#pragma omp parallel for
+#ifdef USE_MPI
+	for (i = swp_node_sti; i <= swp_node_edi; i++) {
+#else
 	for (i = 0; i < nSwaptions; i++) {
+#endif
 		if (swaptions[i].dCompounding == 0) {
 			dStrikeCont[i] = swaptions[i].dStrike;
 		} else {
@@ -497,8 +520,11 @@ int main(int argc, char *argv[])
 	int l;
 	FTYPE dSumVol;
 
+#ifdef USE_MPI
+	for (i = swp_node_sti; i <= swp_node_edi; i++) {
+#else
 	for (i = 0; i < nSwaptions; i++) {
-
+#endif	
 		// Store swap payoffs
 		for (j = 0; j <= iSwapVectorLength-1; j++)
 			pdSwapPayoffs[iSwapVectorLength * i + j] = 0.0;
@@ -545,8 +571,13 @@ int main(int argc, char *argv[])
 
 	// Calculate # of swaptions per device
 	int *swp_dev = (int*) malloc(sizeof(int) * dev_cnt);
+#ifdef USE_MPI
+	int leftover = swp_node % dev_cnt;
+	int tmp_cnt = floor((double)swp_node / (double)dev_cnt);
+#else
 	int leftover = nSwaptions % dev_cnt;
 	int tmp_cnt = floor((double)nSwaptions / (double)dev_cnt);
+#endif
 
 	for (i = 0; i < dev_cnt; i++) {
 		if (i < leftover)
@@ -561,7 +592,6 @@ int main(int argc, char *argv[])
 	leftover = iter_tot % GLOBAL_WORK_SIZE;
 	tmp_cnt = floor((double)iter_tot / (double)GLOBAL_WORK_SIZE);
 
-//#pragma omp parallel for
 	for (i = 0; i < GLOBAL_WORK_SIZE; i++) {
 		if (i < leftover)
 			iter_wi[i] = tmp_cnt + 1;
@@ -604,7 +634,6 @@ int main(int argc, char *argv[])
 		leftover = ran_dev[i] % GLOBAL_WORK_SIZE;
 		tmp_cnt = floor((double)ran_dev[i] / (double)GLOBAL_WORK_SIZE);
 
-//#pragma omp parallel for
 		for (j = 0; j < GLOBAL_WORK_SIZE; j++) {
 			if (j < leftover)
 				ran_wi[GLOBAL_WORK_SIZE * i + j] = tmp_cnt + 1;
@@ -641,7 +670,7 @@ int main(int argc, char *argv[])
 #ifdef USE_CPU
 		cl_sti[i] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(unsigned int) * dev_cnt * GLOBAL_WORK_SIZE, ran_wi_sti, &err);
 		cl_edi[i] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(unsigned int) * dev_cnt * GLOBAL_WORK_SIZE, ran_wi_edi, &err);
-#elif USE_GPU
+#else
 		cl_sti[i] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(unsigned int) * dev_cnt * GLOBAL_WORK_SIZE, ran_wi_sti, &err);
 		cl_edi[i] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(unsigned int) * dev_cnt * GLOBAL_WORK_SIZE, ran_wi_edi, &err);
 #endif
@@ -725,8 +754,10 @@ int main(int argc, char *argv[])
 	cl_mem cl_iter_wi_sti;
 	cl_mem cl_iter_wi_edi;
 
-	FTYPE *acc_dSumSimSwaptionPrice = (FTYPE*) malloc(sizeof(FTYPE) * GLOBAL_WORK_SIZE * nSwaptions);
-	FTYPE *acc_dSumSquareSimSwaptionPrice = (FTYPE*) malloc(sizeof(FTYPE) * GLOBAL_WORK_SIZE * nSwaptions);
+	FTYPE *acc_dSumSimSwaptionPrice = (FTYPE*) calloc(GLOBAL_WORK_SIZE * nSwaptions, sizeof(FTYPE));
+	FTYPE *acc_dSumSquareSimSwaptionPrice = (FTYPE*) calloc(GLOBAL_WORK_SIZE * nSwaptions, sizeof(FTYPE));
+	//FTYPE *acc_dSumSimSwaptionPrice = (FTYPE*) malloc(sizeof(FTYPE) * GLOBAL_WORK_SIZE * nSwaptions);
+	//FTYPE *acc_dSumSquareSimSwaptionPrice = (FTYPE*) malloc(sizeof(FTYPE) * GLOBAL_WORK_SIZE * nSwaptions);
 
 	// Create buffers (common across all swaptions)
 #ifdef USE_CPU
@@ -734,7 +765,7 @@ int main(int argc, char *argv[])
 	cl_gpdZ = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(FTYPE) * ranCnt, pdZ, &err);
 	cl_iter_wi_sti = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(unsigned int) * GLOBAL_WORK_SIZE, iter_wi_sti, &err);
 	cl_iter_wi_edi = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(unsigned int) * GLOBAL_WORK_SIZE, iter_wi_edi, &err);
-#elif USE_GPU
+#else
 	cl_ppdFactors = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(FTYPE) * iFactors * (iN-1), gppdFactors, &err);
 	cl_gpdZ = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(FTYPE) * ranCnt, pdZ, &err);
 	cl_iter_wi_sti = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(unsigned int) * GLOBAL_WORK_SIZE, iter_wi_sti, &err);
@@ -749,7 +780,11 @@ int main(int argc, char *argv[])
 	// Enqueue kernels for each swaption
 	int blk_size = BLOCK_SIZE;
 	int swp_cnt;
+#ifdef USE_MPI
+	int cur_swp = swp_node_sti;
+#else
 	int cur_swp = 0;
+#endif
 
 	for (i = 0; i < dev_cnt; i++) {
 		for (swp_cnt = 0; swp_cnt < swp_dev[i]; swp_cnt++) {
@@ -768,7 +803,7 @@ int main(int argc, char *argv[])
 			cl_pdSwapPayoffs[cur_swp] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(FTYPE) * iSwapVectorLength, pdSwapPayoffs + iSwapVectorLength * cur_swp, &err);
 			cl_dSumSimSwaptionPrice[cur_swp] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(FTYPE) * GLOBAL_WORK_SIZE, acc_dSumSimSwaptionPrice + GLOBAL_WORK_SIZE * cur_swp, &err);
 			cl_dSumSquareSimSwaptionPrice[cur_swp] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(FTYPE) * GLOBAL_WORK_SIZE, acc_dSumSquareSimSwaptionPrice + GLOBAL_WORK_SIZE * cur_swp, &err);
-#elif USE_GPU
+#else
 			cl_pdForward[cur_swp] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(FTYPE) * iN, pdForward + iN * cur_swp, &err);
 			cl_pdTotalDrift[cur_swp] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(FTYPE) * (iN-1), pdTotalDrift + (iN-1) * cur_swp, &err);
 			cl_pdSwapPayoffs[cur_swp] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(FTYPE) * iSwapVectorLength, pdSwapPayoffs + iSwapVectorLength * cur_swp, &err);
@@ -840,20 +875,45 @@ int main(int argc, char *argv[])
 	}
 	
 	// Reduce prices TODO: too heavy?
+#ifdef USE_MPI
+	FTYPE* mpi_acc_dSumSimSwaptionPrice;
+	FTYPE* mpi_acc_dSumSquareSimSwaptionPrice;
+
+	if (comm_rank == 0) {
+		mpi_acc_dSumSimSwaptionPrice = (FTYPE*) malloc(sizeof(FTYPE) * GLOBAL_WORK_SIZE * nSwaptions);
+		mpi_acc_dSumSquareSimSwaptionPrice = (FTYPE*) malloc(sizeof(FTYPE) * GLOBAL_WORK_SIZE * nSwaptions);
+	}
+
+	// Reduction
+	// (need to change MPI_DOUBLE if FTYPE changes)
+	MPI_Reduce(acc_dSumSimSwaptionPrice, mpi_acc_dSumSimSwaptionPrice, GLOBAL_WORK_SIZE * nSwaptions, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+	MPI_Reduce(acc_dSumSquareSimSwaptionPrice, mpi_acc_dSumSquareSimSwaptionPrice, GLOBAL_WORK_SIZE * nSwaptions, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+#endif
+
+#ifdef USE_MPI
+	if (comm_rank == 0) {
+#endif
 	FTYPE fin_dSumSimSwaptionPrice[nSwaptions];
 	FTYPE fin_dSumSquareSimSwaptionPrice[nSwaptions];
 
-//#pragma omp parallel for private(j)
 	for (i = 0; i < nSwaptions; i++) {
 		fin_dSumSimSwaptionPrice[i] = 0.0;
 		fin_dSumSquareSimSwaptionPrice[i] = 0.0;
 		for (j = 0; j < GLOBAL_WORK_SIZE; j++) {
+#ifdef USE_MPI
+			fin_dSumSimSwaptionPrice[i] += mpi_acc_dSumSimSwaptionPrice[GLOBAL_WORK_SIZE * i + j];
+			fin_dSumSquareSimSwaptionPrice[i] += mpi_acc_dSumSquareSimSwaptionPrice[GLOBAL_WORK_SIZE * i + j];
+#else
 			fin_dSumSimSwaptionPrice[i] += acc_dSumSimSwaptionPrice[GLOBAL_WORK_SIZE * i + j];
 			fin_dSumSquareSimSwaptionPrice[i] += acc_dSumSquareSimSwaptionPrice[GLOBAL_WORK_SIZE * i + j];
+#endif
 		}
 		swaptions[i].dSimSwaptionMeanPrice = fin_dSumSimSwaptionPrice[i] / NUM_TRIALS;
 		swaptions[i].dSimSwaptionStdError = sqrt((fin_dSumSquareSimSwaptionPrice[i]-fin_dSumSimSwaptionPrice[i]*fin_dSumSimSwaptionPrice[i]/NUM_TRIALS)/(NUM_TRIALS-1.0))/sqrt((FTYPE)NUM_TRIALS);
 	}
+#ifdef USE_MPI
+	}
+#endif
 
 	// ***** Free *****
 	free(pdForward);
@@ -870,6 +930,18 @@ int main(int argc, char *argv[])
 	free(ran_wi);
 	free(ran_wi_sti);
 	free(ran_wi_edi);
+	free(acc_dSumSimSwaptionPrice);
+	free(acc_dSumSquareSimSwaptionPrice);
+
+#ifdef USE_MPI
+	if (comm_rank == 0) {
+		free(mpi_acc_dSumSimSwaptionPrice);
+		free(mpi_acc_dSumSquareSimSwaptionPrice);
+	}
+
+	// Finalize
+	MPI_Finalize();
+#endif // MPI
 
 #endif // OpenCL
 
@@ -899,8 +971,9 @@ int main(int argc, char *argv[])
 #endif // TBB_VERSION	
 
 #elif USE_CPU
-
 #elif USE_GPU
+#elif USE_MPI
+#elif USE_SNUCL
 
 #else
 	int threadID=0;
@@ -910,12 +983,18 @@ int main(int argc, char *argv[])
 
 	clock_gettime(CLOCK_MONOTONIC, &end);
 	timespec_subtract(&spent, &end, &start);
+#ifdef USE_MPI
+	if (comm_rank == 0)
+#endif
 	printf("Time spent: %ld.%09ld\n", spent.tv_sec, spent.tv_nsec);
 
 #ifdef ENABLE_PARSEC_HOOKS
 	__parsec_roi_end();
 #endif
 
+#ifdef USE_MPI
+	if (comm_rank == 0)
+#endif
 	for (i = 0; i < nSwaptions; i++) {
 		fprintf(stderr,"Swaption%d: [SwaptionPrice: %.10lf StdError: %.10lf] \n", 
 				i, swaptions[i].dSimSwaptionMeanPrice, swaptions[i].dSimSwaptionStdError);
