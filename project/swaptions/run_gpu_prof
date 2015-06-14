@@ -1,0 +1,2 @@
+#!/bin/bash
+thorq --add --mode single --device gpu /opt/AMDAPP/AMDAPPProfiler-2.5/x86_64/sprofile -p -w . ./swaptions -ns 128 -sm 100000

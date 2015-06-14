@@ -23,12 +23,16 @@ ifdef version
     CXXFLAGS := $(CXXFLAGS) -fopenmp
   endif
   ifeq "$(version)" "mpi"
+    CXX := mpicxx
     DEF := $(DEF) -DUSE_MPI
-    LIBS := $(LIBS)
+    LIBS := $(LIBS) -lOpenCL -lgomp
+    CXXFLAGS := $(CXXFLAGS) -fopenmp
   endif
   ifeq "$(version)" "snucl"
+    CXX := mpicxx
     DEF := $(DEF) -DUSE_SNUCL
-    LIBS := $(LIBS)
+    LIBS := $(LIBS) -lOpenCL -lgomp
+    CXXFLAGS := $(CXXFLAGS) -fopenmp
   endif
 endif
 

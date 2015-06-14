@@ -29,16 +29,19 @@ tbb::cache_aligned_allocator<parm> memory_parm;
 #endif // TBB_VERSION
 #endif //ENABLE_THREADS
 
-#if defined(USE_CPU) || defined(USE_GPU)
+#if (defined(USE_CPU) || defined(USE_GPU)) || (defined(USE_MPI) || defined(USE_SNUCL))
 #include <CL/opencl.h>
 #ifdef _OPENMP
 #include <omp.h>
 #endif // OpenMP
+#ifdef USE_MPI
+#include "mpi.h"
+#endif // MPI
 #define MAX_SOURCE_SIZE 0x100000
 #define KCNT 2
 #define GLOBAL_WORK_SIZE 1024
 using namespace std;
-#endif // USE_CPU || USE_GPU
+#endif // USE_CPU || USE_GPU || USE_MPI || USE_SNUCL
 
 #ifdef ENABLE_PARSEC_HOOKS
 #include <hooks.h>
@@ -266,9 +269,18 @@ int main(int argc, char *argv[])
 
 	clock_gettime(CLOCK_MONOTONIC, &start);
 
-#if defined(USE_CPU) || defined(USE_GPU)
+#if (defined(USE_CPU) || defined(USE_GPU)) || (defined(USE_MPI) || defined(USE_SNUCL))
 
 	// ******************** OpenCL ********************
+
+#ifdef USE_MPI
+	// ***** MPI Setup *****
+	int comm_rank, comm_size;
+
+	MPI_Init(&argc, &argv);
+	MPI_Comm_rank(MPI_COMM_WORLD, &comm_rank);
+	MPI_Comm_size(MPI_COMM_WORLD, &comm_size);
+#endif // MPI
 
 	// ***** Preparation *****
 
@@ -469,7 +481,7 @@ int main(int argc, char *argv[])
 	int iSwapTimePoints = (int)(dTenor/ddelt + 0.5);
 	FTYPE dSwapVectorYears = (FTYPE)(iSwapVectorLength*ddelt);
 
-	//#pragma omp parallel for
+//#pragma omp parallel for
 	for (i = 0; i < nSwaptions; i++) {
 		if (swaptions[i].dCompounding == 0) {
 			dStrikeCont[i] = swaptions[i].dStrike;
@@ -666,7 +678,7 @@ int main(int argc, char *argv[])
 		}
 
 		// Read pdZ back to host memory
-		err = clEnqueueReadBuffer(commands[i], cl_pdZ[i], CL_TRUE, (size_t) buf_ofs, (size_t) (ran_dev[i] * sizeof(FTYPE)), pdZ + host_ofs, 0, NULL, NULL); // TODO: make it non-blocking
+		err = clEnqueueReadBuffer(commands[i], cl_pdZ[i], CL_FALSE, (size_t) buf_ofs, (size_t) (ran_dev[i] * sizeof(FTYPE)), pdZ + host_ofs, 0, NULL, NULL);
 
 		if (err != CL_SUCCESS) {
 			printf("Error: failed to read buffer. %d\n", err);
@@ -831,7 +843,7 @@ int main(int argc, char *argv[])
 	FTYPE fin_dSumSimSwaptionPrice[nSwaptions];
 	FTYPE fin_dSumSquareSimSwaptionPrice[nSwaptions];
 
-	//#pragma omp parallel for private(j)
+//#pragma omp parallel for private(j)
 	for (i = 0; i < nSwaptions; i++) {
 		fin_dSumSimSwaptionPrice[i] = 0.0;
 		fin_dSumSquareSimSwaptionPrice[i] = 0.0;
