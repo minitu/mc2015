@@ -37,15 +37,12 @@ __kernel void swaption_sim(
 	__global FTYPE *pdSwapRatePath = g_pdSwapRatePath + iSwapVectorLength * BLOCKSIZE * global_id;
 	__global FTYPE *pdSwapDiscountFactors = g_pdSwapDiscountFactors + iSwapVectorLength * BLOCKSIZE * global_id;
 
-	// Copy into local memory
-
 	// Simulation loops
 	int my_iter_index = 0;
 	int i, j, k, l, ii;
 
 	FTYPE dTotalShock;
 	int b;
-	int pdZi;
 
 	int n_iN = iSwapVectorLength;
 	FTYPE n_ddelt = (FTYPE) ((FTYPE)dSwapVectorYears / n_iN);
@@ -57,9 +54,9 @@ __kernel void swaption_sim(
 	FTYPE dSumSimSwaptionPrice = 0.0;
 	FTYPE dSumSquareSimSwaptionPrice = 0.0;
 
-	for (ii = iter_wi_sti; ii <= iter_wi_edi; ii++) {
-		pdZ = g_pdZ + iFactors * iN * BLOCKSIZE * ii;
-		pdZi = 0;
+	for (ii = iter_wi_sti[global_id]; ii <= iter_wi_edi[global_id]; ii++) {
+		
+		pdZ = g_pdZ + iFactors * (iN-1) * BLOCKSIZE * ii;
 		
 		// Rest of HJM_SimPath_Forward_Blocking
 		for (b = 0; b < BLOCKSIZE; b++) {
@@ -71,14 +68,14 @@ __kernel void swaption_sim(
 				}
 			}
 		}
-
+		
 		for (b = 0; b < BLOCKSIZE; b++) {
 			for (j = 1; j <= iN-1; j++) {
 				for (l = 0; l <= iN-(j+1); l++) {
 					dTotalShock = 0;
 
 					for (i = 0; i <= iFactors-1; i++) {
-						dTotalShock += ppdFactors[(iN-1) * i + l] * pdZ[pdZi++];
+						dTotalShock += ppdFactors[(iN-1) * i + l] * pdZ[(iN-1)*iFactors*b + iFactors*(j-1) + i];
 					}
 
 					ppdHJMPath[iN * BLOCKSIZE * j + BLOCKSIZE * l + b] = ppdHJMPath[iN * BLOCKSIZE * (j-1) + BLOCKSIZE * (l+1) + b] + pdTotalDrift[l] * ddelt + sqrt_ddelt * dTotalShock;
@@ -97,7 +94,7 @@ __kernel void swaption_sim(
 		for (j = 0; j <= (iN-1)*BLOCKSIZE-1; j++) pdexpRes[j] = -pdDiscountingRatePath[j]*ddelt;
 		for (j = 0; j <= (iN-1)*BLOCKSIZE-1; j++) pdexpRes[j] = exp(pdexpRes[j]);
 
-		for (i = 0; i <= iN*BLOCKSIZE; i++)
+		for (i = 0; i < iN*BLOCKSIZE; i++)
 			pdPayoffDiscountFactors[i] = 1.0;
 
 		for (i = 1; i <= iN-1; i++) {
@@ -116,8 +113,8 @@ __kernel void swaption_sim(
 		}
 
 		// Discount_Factors_Blocking
-		for (j = 0; j <= (n_iN-1) * BLOCKSIZE-1; j++) pdexpRes[j] = -pdSwapRatePath[j]*n_ddelt;
-		for (j = 0; j <= (n_iN-1) * BLOCKSIZE-1; j++) pdexpRes[j] = exp(pdexpRes[j]);
+		for (j = 0; j <= (n_iN-1)*BLOCKSIZE-1; j++) pdexpRes[j] = -pdSwapRatePath[j]*n_ddelt;
+		for (j = 0; j <= (n_iN-1)*BLOCKSIZE-1; j++) pdexpRes[j] = exp(pdexpRes[j]);
 
 		for (i = 0; i < n_iN*BLOCKSIZE; i++)
 			pdSwapDiscountFactors[i] = 1.0;
