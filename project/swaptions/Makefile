@@ -28,7 +28,8 @@ ifdef version
   ifeq "$(version)" "snucl"
     CXX := mpicxx
     DEF := $(DEF) -DUSE_SNUCL
-    LIBS := $(LIBS) -lOpenCL
+    INCLUDE := $(INCLUDE) -I$(SNUCLROOT)/inc
+    LIBS := $(LIBS) -L$(SNUCLROOT)/lib -lsnucl_cluster
   endif
 endif
 
