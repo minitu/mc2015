@@ -7,8 +7,6 @@ __kernel void swaption_RanGen(
 		__global unsigned int *ran_wi_edi)
 {
 	const int global_id = get_global_id(0);
-	const int local_id = get_local_id(0);
-	const int group_id = get_group_id(0);
 
 	FTYPE a[4] = {
 		2.50662823884,

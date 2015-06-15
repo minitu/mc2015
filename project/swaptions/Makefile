@@ -1,4 +1,4 @@
-DEF =
+DEF = -DDEBUG
 INCLUDE = -lrt
 
 EXEC = swaptions 

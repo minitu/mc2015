@@ -645,11 +645,40 @@ int main(int argc, char *argv[])
 	long lRndSeed = 100;
 	unsigned int ranCnt = iFactors * iN * BLOCK_SIZE * iter_tot;
 	FTYPE *pdZ = (FTYPE*) calloc(ranCnt, sizeof(FTYPE));
+
+#ifdef USE_MPI
+	// Calculate # of random numbers per node
+	unsigned int ran_node;
+	unsigned int ran_node_sti, ran_node_edi;
+	tmp_index = 0;
+	leftover = ranCnt % comm_size;
+	tmp_cnt = floor((double)ranCnt / (double)comm_size);
+
+	for (i = 0; i < comm_size; i++) {
+		if (i == comm_rank)
+			ran_node_sti = tmp_index;
+
+		if (i < leftover)
+			tmp_index += tmp_cnt + 1;
+		else
+			tmp_index += tmp_cnt;
+
+		if (i == comm_rank)
+			ran_node_edi = tmp_index - 1;
+	}
+
+	ran_node = ran_node_edi - ran_node_sti + 1;
+#endif
 	
 	// Calculate # of random numbers per device
 	unsigned int *ran_dev = (unsigned int*) malloc(sizeof(unsigned int) * dev_cnt);
+#ifdef USE_MPI
+	leftover = ran_node % dev_cnt;
+	tmp_cnt = floor((double)ran_node / (double)dev_cnt);
+#else
 	leftover = ranCnt % dev_cnt;
 	tmp_cnt = floor((double)ranCnt / (double)dev_cnt);
+#endif
 
 	for (i = 0; i < dev_cnt; i++) {
 		if (i < leftover)
@@ -676,7 +705,11 @@ int main(int argc, char *argv[])
 	unsigned int *ran_wi_sti = (unsigned int*) malloc(sizeof(unsigned int) * dev_cnt * GLOBAL_WORK_SIZE);
 	unsigned int *ran_wi_edi = (unsigned int*) malloc(sizeof(unsigned int) * dev_cnt * GLOBAL_WORK_SIZE);
 
+#ifdef USE_MPI
+	stIndex1 = ran_node_sti;
+#else
 	stIndex1 = 0;
+#endif
 	unsigned int stIndex2;
 	for (i = 0; i < dev_cnt; i++) {
 		stIndex2 = stIndex1;
@@ -712,8 +745,13 @@ int main(int argc, char *argv[])
 	}
 
 	// Random number generation with all OpenCL devices
+#ifdef USE_MPI
+	unsigned int buf_ofs = sizeof(FTYPE) * ran_node_sti;
+	unsigned int host_ofs = ran_node_sti;
+#else
 	unsigned int buf_ofs = 0; // Offset in buffer
 	unsigned int host_ofs = 0; // Offset in host memory
+#endif
 	for (i = 0; i < dev_cnt; i++) {
 		// Set kernel arguments
 		err = clSetKernelArg(kernels[0], 0, sizeof(int), (void*) &globalWorkSize);
@@ -752,6 +790,25 @@ int main(int argc, char *argv[])
 	for (i = 0; i < dev_cnt; i++) {
 		clFinish(commands[i]);
 	}
+
+#ifdef USE_MPI
+	FTYPE *mpi_pdZ;
+
+	if (comm_rank == 0) {
+		mpi_pdZ = (FTYPE*) malloc(sizeof(FTYPE) * ranCnt);
+	}
+
+	// Reduction
+	MPI_Reduce(pdZ, mpi_pdZ, ranCnt, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+
+	if (comm_rank == 0) {
+		free(pdZ);
+		pdZ = mpi_pdZ;
+	}
+
+	// Broadcast
+	MPI_Bcast(pdZ, ranCnt, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+#endif
 
 	// ***** Simulation *****
 	
@@ -953,6 +1010,9 @@ int main(int argc, char *argv[])
 	free(iter_wi);
 	free(iter_wi_sti);
 	free(iter_wi_edi);
+#ifdef USE_MPI
+	if (comm_rank != 0)
+#endif
 	free(pdZ);
 	free(ran_dev);
 	free(ran_wi);
