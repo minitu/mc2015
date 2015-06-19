@@ -1,5 +1,5 @@
-DEF = -DDEBUG
-INCLUDE = -lrt
+DEF =
+LIBS = -lrt
 
 EXEC = swaptions 
 
@@ -28,7 +28,7 @@ ifdef version
   ifeq "$(version)" "snucl"
     CXX := mpicxx
     DEF := $(DEF) -DUSE_SNUCL
-    INCLUDE := $(INCLUDE) -I$(SNUCLROOT)/inc
+    INCLUDE := $(INCLUDE) -I$(SNUCLROOT)/inc -I$(SNUCLROOT)/common.mk
     LIBS := $(LIBS) -L$(SNUCLROOT)/lib -lsnucl_cluster
   endif
 endif
@@ -43,10 +43,10 @@ $(EXEC): $(OBJS)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) $(DEF) $(OBJS) $(INCLUDE) $(LIBS) -o $(EXEC)
 
 .cpp.o:
-	$(CXX) $(CXXFLAGS) $(DEF) -c $*.cpp -o $*.o
+	$(CXX) $(CXXFLAGS) $(DEF) $(INCLUDE) $(LIBS) -c $*.cpp -o $*.o
 
 .c.o:
-	$(CXX) $(CXXFLAGS) $(DEF) -c $*.c -o $*.o
+	$(CXX) $(CXXFLAGS) $(DEF) $(INCLUDE) $(LIBS) -c $*.c -o $*.o
 
 clean:
 	rm -f $(OBJS) $(EXEC)

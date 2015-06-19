@@ -9,33 +9,31 @@ __kernel void swaption_sim(
 		int iSwapVectorLength,
 		int iSwapStartTimeIndex,
 		FTYPE dSwapVectorYears,
-		__global FTYPE *x_pdForward,
-		__global FTYPE *x_pdTotalDrift,
-		__global FTYPE *x_ppdFactors,
+		__global FTYPE *pdForward,
+		__global FTYPE *pdTotalDrift,
+		__global FTYPE *ppdFactors,
 		__global FTYPE *g_pdZ,
 		__global FTYPE *g_pdDiscountingRatePath,
 		__global FTYPE *g_pdPayoffDiscountFactors,
 		__global FTYPE *g_pdexpRes,
 		__global FTYPE *g_pdSwapRatePath,
 		__global FTYPE *g_pdSwapDiscountFactors,
-		__global FTYPE *x_pdSwapPayoffs,
+		__global FTYPE *pdSwapPayoffs,
 		__global FTYPE *g_dSumSimSwaptionPrice,
 		__global FTYPE *g_dSumSquareSimSwaptionPrice,
 		__global unsigned int *iter_wi_sti,
 		__global unsigned int *iter_wi_edi)
 {
 	const int global_id = get_global_id(0);
-	const int local_id = get_local_id(0);
-	const int group_id = get_group_id(0);
 
 	// Calculate device global memory address allocated to this work item
-	//__global FTYPE *ppdHJMPath = g_ppdHJMPath + iN * iN * BLOCKSIZE * global_id;
-	__global FTYPE *x_pdZ;
-	//__global FTYPE *pdDiscountingRatePath = g_pdDiscountingRatePath + iN * BLOCKSIZE * global_id;
-	//__global FTYPE *pdPayoffDiscountFactors = g_pdPayoffDiscountFactors + iN * BLOCKSIZE * global_id;
-	//__global FTYPE *pdexpRes = g_pdexpRes + (iN-1) * BLOCKSIZE * global_id;
-	//__global FTYPE *pdSwapRatePath = g_pdSwapRatePath + iSwapVectorLength * BLOCKSIZE * global_id;
-	//__global FTYPE *pdSwapDiscountFactors = g_pdSwapDiscountFactors + iSwapVectorLength * BLOCKSIZE * global_id;
+	__global FTYPE *ppdHJMPath = g_ppdHJMPath + iN * iN * BLOCKSIZE * global_id;
+	__global FTYPE *pdZ;
+	__global FTYPE *pdDiscountingRatePath = g_pdDiscountingRatePath + iN * BLOCKSIZE * global_id;
+	__global FTYPE *pdPayoffDiscountFactors = g_pdPayoffDiscountFactors + iN * BLOCKSIZE * global_id;
+	__global FTYPE *pdexpRes = g_pdexpRes + (iN-1) * BLOCKSIZE * global_id;
+	__global FTYPE *pdSwapRatePath = g_pdSwapRatePath + iSwapVectorLength * BLOCKSIZE * global_id;
+	__global FTYPE *pdSwapDiscountFactors = g_pdSwapDiscountFactors + iSwapVectorLength * BLOCKSIZE * global_id;
 	
 	// Simulation loops
 	int my_iter_index = 0;
@@ -54,39 +52,6 @@ __kernel void swaption_sim(
 	FTYPE dSumSimSwaptionPrice = 0.0;
 	FTYPE dSumSquareSimSwaptionPrice = 0.0;
 
-	// Optimization
-	FTYPE ppdHJMPath[1936];
-	// ----- 2-1 -----
-	FTYPE pdForward[11];
-	for (i = 0; i < iN; i++) {
-		pdForward[i] = x_pdForward[i];
-	}
-	FTYPE pdTotalDrift[10];
-	for (i = 0; i < iN; i++) {
-		pdTotalDrift[i] = x_pdTotalDrift[i];
-	}
-	FTYPE ppdFactors[30];
-	for (i = 0; i < iFactors * (iN-1); i++) {
-		ppdFactors[i] = x_ppdFactors[i];
-	}
-
-	FTYPE pdZ[30];
-	// ----- 2-3 -----
-	FTYPE pdDiscountingRatePath[176];
-	FTYPE pdPayoffDiscountFactors[176];
-	FTYPE pdexpRes[160];
-	FTYPE pdSwapRatePath[144];
-	FTYPE pdSwapDiscountFactors[144];
-	FTYPE pdSwapPayoffs[9];
-
-	for (i = 0; i < iSwapVectorLength; i++) {
-		pdSwapPayoffs[i] = x_pdSwapPayoffs[i];
-	}
-	
-	// ----- 2-6 -----
-	//FTYPE pdZ[480]; 2-3
-	// ----- 2-2 -----
-
 	for (ii = iter_wi_sti[global_id]; ii <= iter_wi_edi[global_id]; ii++) {
 		
 		// Rest of HJM_SimPath_Forward_Blocking
@@ -100,25 +65,15 @@ __kernel void swaption_sim(
 			}
 		}
 		
-		// Copy pdZ into private memory
-		x_pdZ = g_pdZ + iFactors * (iN-1) * BLOCKSIZE * ii;
+		pdZ = g_pdZ + iFactors * (iN-1) * BLOCKSIZE * ii;
 
 		for (b = 0; b < BLOCKSIZE; b++) {
-			// 
-			for (j = 1; j <= iN-1; j++) {
-				for (i = 0; i <= iFactors-1; i++) {
-					pdZ[iFactors*(j-1) + i] = x_pdZ[(iN-1)*iFactors*b + iFactors*(j-1) + i];
-				}
-			}
-			// ----- 2-4 -----
-
 			for (j = 1; j <= iN-1; j++) {
 				for (l = 0; l <= iN-(j+1); l++) {
 					dTotalShock = 0;
 
 					for (i = 0; i <= iFactors-1; i++) {
-						//dTotalShock += ppdFactors[(iN-1) * i + l] * pdZ[(iN-1)*iFactors*b + iFactors*(j-1) + i];
-						dTotalShock += ppdFactors[(iN-1) * i + l] * pdZ[iFactors*(j-1) + i];
+						dTotalShock += ppdFactors[(iN-1) * i + l] * pdZ[(iN-1)*iFactors*b + iFactors*(j-1) + i];
 					}
 
 					ppdHJMPath[iN * BLOCKSIZE * j + BLOCKSIZE * l + b] = ppdHJMPath[iN * BLOCKSIZE * (j-1) + BLOCKSIZE * (l+1) + b] + pdTotalDrift[l] * ddelt + sqrt_ddelt * dTotalShock;

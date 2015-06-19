@@ -31,7 +31,10 @@ tbb::cache_aligned_allocator<parm> memory_parm;
 #endif //ENABLE_THREADS
 
 #if (defined(USE_CPU) || defined(USE_GPU)) || (defined(USE_MPI) || defined(USE_SNUCL))
-#include <CL/opencl.h>
+#include <CL/cl.h>
+#ifdef USE_SNUCL
+#include <CL/cl_ext_collective.h>
+#endif // SNUCL
 #ifdef USE_MPI
 #include "mpi.h"
 #endif // MPI
@@ -287,6 +290,7 @@ int main(int argc, char *argv[])
 	int err;
 
 	cl_device_id device_ids[100];
+	cl_context_properties context_properties[3];
 	cl_context context;
 	cl_command_queue commands[100];
 	cl_program programs[KCNT];
@@ -294,9 +298,10 @@ int main(int argc, char *argv[])
 
 	// Gather platform data
 	cl_uint plat_cnt = 0;
-	clGetPlatformIDs(0, 0, &plat_cnt);
+	clGetPlatformIDs(0, NULL, &plat_cnt);
 
 	cl_platform_id platform_ids[plat_cnt];
+	cl_platform_id my_platform;
 	clGetPlatformIDs(plat_cnt, platform_ids, NULL);
 
 	size_t info_size;
@@ -309,6 +314,8 @@ int main(int argc, char *argv[])
 
 #ifdef DEBUG
 	printf("\n[ Platform Information ]\n\n");
+
+	printf("%u platforms are detected.\n\n", plat_cnt);
 
 	for (i = 0; i < plat_cnt; i++) {
 		printf("Platform #%d\n", i);
@@ -325,6 +332,12 @@ int main(int argc, char *argv[])
 				return EXIT_FAILURE;
 			}
 
+#ifdef USE_SNUCL
+			if (strcmp(platform_info, "SnuCL Cluster") == 0) {
+				my_platform = platform_ids[i];
+			}
+#endif
+
 			printf("%s\n", platform_info);
 
 			free(platform_info);
@@ -336,9 +349,13 @@ int main(int argc, char *argv[])
 	// Connect to compute devices
 	cl_uint dev_cnt;
 #ifdef USE_CPU
-	err = clGetDeviceIDs(platform_ids[0], CL_DEVICE_TYPE_CPU, 100, device_ids, &dev_cnt);
-#else
-	err = clGetDeviceIDs(platform_ids[0], CL_DEVICE_TYPE_GPU, 100, device_ids, &dev_cnt);
+	my_platform = platform_ids[0];
+	err = clGetDeviceIDs(my_platform, CL_DEVICE_TYPE_CPU, 100, device_ids, &dev_cnt);
+#elif defined(USE_SNUCL)
+	err = clGetDeviceIDs(my_platform, CL_DEVICE_TYPE_GPU, 100, device_ids, &dev_cnt);
+#else // USE_GPU, USE_MPI
+	my_platform = platform_ids[0];
+	err = clGetDeviceIDs(my_platform, CL_DEVICE_TYPE_GPU, 100, device_ids, &dev_cnt);
 #endif // Compute devices
 
 #ifdef DEBUG
@@ -364,7 +381,14 @@ int main(int argc, char *argv[])
 #endif
 
 	// Create compute context
+#ifdef USE_SNUCL
+	context_properties[0] = CL_CONTEXT_PLATFORM;
+	context_properties[1] = (cl_context_properties)my_platform;
+	context_properties[2] = NULL;
+	context = clCreateContext(context_properties, dev_cnt, device_ids, NULL, NULL, &err);
+#else
 	context = clCreateContext(0, dev_cnt, device_ids, NULL, NULL, &err);
+#endif
 	if (err != CL_SUCCESS) {
 		printf("Error: failed to create compute context. %d\n", err);
 		return EXIT_FAILURE;
@@ -417,7 +441,6 @@ int main(int argc, char *argv[])
 
 	// Build programs
 	string build_str;
-	//stringstream convert;
 	char *build_options;
 
 #ifdef DEBUG
@@ -427,22 +450,6 @@ int main(int argc, char *argv[])
 	for (i = 0; i < KCNT; i++) {
 		// Set build options (KERNEL)
 		build_str = "-DFTYPE=double";
-		/*
-		   if (i == 1) {
-		   build_str += " -DDiN=";
-		   convert.str("");
-		   convert << iN;
-		   build_str += convert.str();
-		   build_str += " -DDiFactors=";
-		   convert.str("");
-		   convert << iFactors;
-		   build_str += convert.str();
-		   build_str += " -DDBLOCKSIZE=";
-		   convert.str("");
-		   convert << BLOCK_SIZE;
-		   build_str += convert.str();
-		   }
-		   */
 		build_options = const_cast<char*>(build_str.c_str());
 #ifdef DEBUG
 		printf("Kernel %d: %s\n", i, build_options);
@@ -767,7 +774,7 @@ int main(int argc, char *argv[])
 
 	FTYPE *acc_dSumSimSwaptionPrice = (FTYPE*) calloc(GLOBAL_WORK_SIZE * nSwaptions, sizeof(FTYPE));
 	FTYPE *acc_dSumSquareSimSwaptionPrice = (FTYPE*) calloc(GLOBAL_WORK_SIZE * nSwaptions, sizeof(FTYPE));
-	
+
 	// Device memory objects
 	cl_mem cl_ppdHJMPath[nSwaptions];
 	cl_mem cl_pdDiscountingRatePath[nSwaptions];
@@ -778,32 +785,82 @@ int main(int argc, char *argv[])
 
 	cl_mem cl_pdForward[nSwaptions];
 	cl_mem cl_pdTotalDrift[nSwaptions];
-	cl_mem cl_ppdFactors;
-	cl_mem cl_gpdZ;
+	cl_mem cl_ppdFactors[dev_cnt];
+	cl_mem cl_gpdZ[dev_cnt];
 	cl_mem cl_pdSwapPayoffs[nSwaptions];
 	cl_mem cl_dSumSimSwaptionPrice[nSwaptions];
 	cl_mem cl_dSumSquareSimSwaptionPrice[nSwaptions];
 
-	cl_mem cl_iter_wi_sti;
-	cl_mem cl_iter_wi_edi;
+	cl_mem cl_iter_wi_sti[dev_cnt];
+	cl_mem cl_iter_wi_edi[dev_cnt];
 
 	// Create buffers (common across all swaptions)
+	for (i = 0; i < dev_cnt; i++) {
 #ifdef USE_CPU
-	cl_ppdFactors = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(FTYPE) * iFactors * (iN-1), gppdFactors, &err);
-	cl_gpdZ = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(FTYPE) * ranCnt, pdZ, &err);
-	cl_iter_wi_sti = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(unsigned int) * GLOBAL_WORK_SIZE, iter_wi_sti, &err);
-	cl_iter_wi_edi = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(unsigned int) * GLOBAL_WORK_SIZE, iter_wi_edi, &err);
+		cl_ppdFactors[i] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(FTYPE) * iFactors * (iN-1), gppdFactors, &err);
+		cl_gpdZ[i] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(FTYPE) * ranCnt, pdZ, &err);
+		cl_iter_wi_sti[i] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(unsigned int) * GLOBAL_WORK_SIZE, iter_wi_sti, &err);
+		cl_iter_wi_edi[i] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(unsigned int) * GLOBAL_WORK_SIZE, iter_wi_edi, &err);
+#elif defined(USE_SNUCL)
+		cl_ppdFactors[i] = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(FTYPE) * iFactors * (iN-1), NULL, &err);
+		cl_gpdZ[i] = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(FTYPE) * ranCnt, NULL, &err);
+		cl_iter_wi_sti[i] = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(unsigned int) * GLOBAL_WORK_SIZE, NULL, &err);
+		cl_iter_wi_edi[i] = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(unsigned int) * GLOBAL_WORK_SIZE, NULL, &err);
 #else
-	cl_ppdFactors = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(FTYPE) * iFactors * (iN-1), gppdFactors, &err);
-	cl_gpdZ = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(FTYPE) * ranCnt, pdZ, &err);
-	cl_iter_wi_sti = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(unsigned int) * GLOBAL_WORK_SIZE, iter_wi_sti, &err);
-	cl_iter_wi_edi = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(unsigned int) * GLOBAL_WORK_SIZE, iter_wi_edi, &err);
+		cl_ppdFactors[i] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(FTYPE) * iFactors * (iN-1), gppdFactors, &err);
+		cl_gpdZ[i] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(FTYPE) * ranCnt, pdZ, &err);
+		cl_iter_wi_sti[i] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(unsigned int) * GLOBAL_WORK_SIZE, iter_wi_sti, &err);
+		cl_iter_wi_edi[i] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(unsigned int) * GLOBAL_WORK_SIZE, iter_wi_edi, &err);
 #endif
 
+		if (err != CL_SUCCESS) {
+			printf("Error: failed to create buffer. %d\n", err);
+			return EXIT_FAILURE;
+		}
+	}
+
+#ifdef USE_SNUCL
+	// Explicitly write buffers
+	for (i = 0; i < dev_cnt; i++) {
+	err = clEnqueueWriteBuffer(commands[i], cl_ppdFactors[i], CL_FALSE, 0, sizeof(FTYPE) * iFactors * (iN-1), gppdFactors, 0, NULL, NULL);
+	err |= clEnqueueWriteBuffer(commands[i], cl_gpdZ[i], CL_FALSE, 0, sizeof(FTYPE) * ranCnt, pdZ, 0, NULL, NULL);
+	err |= clEnqueueWriteBuffer(commands[i], cl_iter_wi_sti[i], CL_FALSE, 0, sizeof(unsigned int) * GLOBAL_WORK_SIZE, iter_wi_sti, 0, NULL, NULL);
+	err |= clEnqueueWriteBuffer(commands[i], cl_iter_wi_edi[i], CL_FALSE, 0, sizeof(unsigned int) * GLOBAL_WORK_SIZE, iter_wi_edi, 0, NULL, NULL);
+	
 	if (err != CL_SUCCESS) {
-		printf("Error: failed to create buffer. %d\n", err);
+		printf("Error: failed to write buffer. %d\n", err);
 		return EXIT_FAILURE;
 	}
+	}
+	
+	for (i = 0; i < dev_cnt; i++) {
+		clFinish(commands[i]);
+	}
+/*
+	// Explicitly write and broadcast buffers
+	err = clEnqueueWriteBuffer(commands[0], cl_ppdFactors[0], CL_FALSE, 0, sizeof(FTYPE) * iFactors * (iN-1), gppdFactors, 0, NULL, NULL);
+	err |= clEnqueueWriteBuffer(commands[0], cl_gpdZ[0], CL_FALSE, 0, sizeof(FTYPE) * ranCnt, pdZ, 0, NULL, NULL);
+	err |= clEnqueueWriteBuffer(commands[0], cl_iter_wi_sti[0], CL_FALSE, 0, sizeof(unsigned int) * GLOBAL_WORK_SIZE, iter_wi_sti, 0, NULL, NULL);
+	err |= clEnqueueWriteBuffer(commands[0], cl_iter_wi_edi[0], CL_FALSE, 0, sizeof(unsigned int) * GLOBAL_WORK_SIZE, iter_wi_edi, 0, NULL, NULL);
+	
+	if (err != CL_SUCCESS) {
+		printf("Error: failed to write buffer. %d\n", err);
+		return EXIT_FAILURE;
+	}
+	
+	clFinish(commands[0]);
+
+	err = clEnqueueBroadcastBuffer(commands + 1, cl_ppdFactors[0], dev_cnt - 1, cl_ppdFactors + 1, 0, NULL, sizeof(FTYPE) * iFactors * (iN-1), 0, NULL, NULL);
+	err |= clEnqueueBroadcastBuffer(commands + 1, cl_gpdZ[0], dev_cnt - 1, cl_gpdZ + 1, 0, NULL, sizeof(FTYPE) * ranCnt, 0, NULL, NULL);
+	err |= clEnqueueBroadcastBuffer(commands + 1, cl_iter_wi_sti[0], dev_cnt - 1, cl_iter_wi_sti + 1, 0, NULL, sizeof(unsigned int) * GLOBAL_WORK_SIZE, 0, NULL, NULL);
+	err |= clEnqueueBroadcastBuffer(commands + 1, cl_iter_wi_edi[0], dev_cnt - 1, cl_iter_wi_edi + 1, 0, NULL, sizeof(unsigned int) * GLOBAL_WORK_SIZE, 0, NULL, NULL);
+
+	if (err != CL_SUCCESS) {
+		printf("Error: failed to broadcast buffer. %d\n", err);
+		return EXIT_FAILURE;
+	}
+	*/
+#endif
 
 	// Enqueue kernels for each swaption
 	int blk_size = BLOCK_SIZE;
@@ -824,13 +881,18 @@ int main(int argc, char *argv[])
 			cl_pdexpRes[cur_swp] = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(FTYPE) * (iN-1) * BLOCK_SIZE * GLOBAL_WORK_SIZE, NULL, &err);
 			cl_pdSwapRatePath[cur_swp] = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(FTYPE) * iSwapVectorLength * BLOCK_SIZE * GLOBAL_WORK_SIZE, NULL, &err);
 			cl_pdSwapDiscountFactors[cur_swp] = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(FTYPE) * iSwapVectorLength * BLOCK_SIZE * GLOBAL_WORK_SIZE, NULL, &err);
-
 #ifdef USE_CPU
 			cl_pdForward[cur_swp] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(FTYPE) * iN, pdForward + iN * cur_swp, &err);
 			cl_pdTotalDrift[cur_swp] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(FTYPE) * (iN-1), pdTotalDrift + (iN-1) * cur_swp, &err);
 			cl_pdSwapPayoffs[cur_swp] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(FTYPE) * iSwapVectorLength, pdSwapPayoffs + iSwapVectorLength * cur_swp, &err);
 			cl_dSumSimSwaptionPrice[cur_swp] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(FTYPE) * GLOBAL_WORK_SIZE, acc_dSumSimSwaptionPrice + GLOBAL_WORK_SIZE * cur_swp, &err);
 			cl_dSumSquareSimSwaptionPrice[cur_swp] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(FTYPE) * GLOBAL_WORK_SIZE, acc_dSumSquareSimSwaptionPrice + GLOBAL_WORK_SIZE * cur_swp, &err);
+#elif defined(USE_SNUCL)
+			cl_pdForward[cur_swp] = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(FTYPE) * iN, NULL, &err);
+			cl_pdTotalDrift[cur_swp] = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(FTYPE) * (iN-1), NULL, &err);
+			cl_pdSwapPayoffs[cur_swp] = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(FTYPE) * iSwapVectorLength, NULL, &err);
+			cl_dSumSimSwaptionPrice[cur_swp] = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(FTYPE) * GLOBAL_WORK_SIZE, NULL, &err);
+			cl_dSumSquareSimSwaptionPrice[cur_swp] = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(FTYPE) * GLOBAL_WORK_SIZE, NULL, &err);
 #else
 			cl_pdForward[cur_swp] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(FTYPE) * iN, pdForward + iN * cur_swp, &err);
 			cl_pdTotalDrift[cur_swp] = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(FTYPE) * (iN-1), pdTotalDrift + (iN-1) * cur_swp, &err);
@@ -843,6 +905,20 @@ int main(int argc, char *argv[])
 				printf("Error: failed to create buffer. %d\n", err);
 				return EXIT_FAILURE;
 			}
+
+#ifdef USE_SNUCL
+			// Write to buffer explicitly
+			err = clEnqueueWriteBuffer(commands[i], cl_pdForward[cur_swp], CL_FALSE, 0, sizeof(FTYPE) * iN, pdForward + iN * cur_swp, 0, NULL, NULL);
+			err |= clEnqueueWriteBuffer(commands[i], cl_pdTotalDrift[cur_swp], CL_FALSE, 0, sizeof(FTYPE) * (iN-1), pdTotalDrift + (iN-1) * cur_swp, 0, NULL, NULL);
+			err |= clEnqueueWriteBuffer(commands[i], cl_pdSwapPayoffs[cur_swp], CL_FALSE, 0, sizeof(FTYPE) * iSwapVectorLength, pdSwapPayoffs + iSwapVectorLength * cur_swp, 0, NULL, NULL);
+			err |= clEnqueueWriteBuffer(commands[i], cl_dSumSimSwaptionPrice[cur_swp], CL_FALSE, 0, sizeof(FTYPE) * GLOBAL_WORK_SIZE, acc_dSumSimSwaptionPrice + GLOBAL_WORK_SIZE * cur_swp, 0, NULL, NULL);
+			err |= clEnqueueWriteBuffer(commands[i], cl_dSumSquareSimSwaptionPrice[cur_swp], CL_FALSE, 0, sizeof(FTYPE) * GLOBAL_WORK_SIZE, acc_dSumSquareSimSwaptionPrice, 0, NULL, NULL);
+
+			if (err != CL_SUCCESS) {
+				printf("Error: failed to write buffer. %d\n", err);
+				return EXIT_FAILURE;
+			}
+#endif
 
 			// Set kernel arguments (unique per swaption)
 			err = clSetKernelArg(kernels[1], 0, sizeof(cl_mem), (void*) &cl_ppdHJMPath[cur_swp]);
@@ -857,8 +933,8 @@ int main(int argc, char *argv[])
 			err |= clSetKernelArg(kernels[1], 9, sizeof(FTYPE), (void*) &dSwapVectorYears);
 			err |= clSetKernelArg(kernels[1], 10, sizeof(cl_mem), (void*) &cl_pdForward[cur_swp]);
 			err |= clSetKernelArg(kernels[1], 11, sizeof(cl_mem), (void*) &cl_pdTotalDrift[cur_swp]);
-			err |= clSetKernelArg(kernels[1], 12, sizeof(cl_mem), (void*) &cl_ppdFactors);
-			err |= clSetKernelArg(kernels[1], 13, sizeof(cl_mem), (void*) &cl_gpdZ);
+			err |= clSetKernelArg(kernels[1], 12, sizeof(cl_mem), (void*) &cl_ppdFactors[i]);
+			err |= clSetKernelArg(kernels[1], 13, sizeof(cl_mem), (void*) &cl_gpdZ[i]);
 			err |= clSetKernelArg(kernels[1], 14, sizeof(cl_mem), (void*) &cl_pdDiscountingRatePath[cur_swp]);
 			err |= clSetKernelArg(kernels[1], 15, sizeof(cl_mem), (void*) &cl_pdPayoffDiscountFactors[cur_swp]);
 			err |= clSetKernelArg(kernels[1], 16, sizeof(cl_mem), (void*) &cl_pdexpRes[cur_swp]);
@@ -867,8 +943,8 @@ int main(int argc, char *argv[])
 			err |= clSetKernelArg(kernels[1], 19, sizeof(cl_mem), (void*) &cl_pdSwapPayoffs[cur_swp]);
 			err |= clSetKernelArg(kernels[1], 20, sizeof(cl_mem), (void*) &cl_dSumSimSwaptionPrice[cur_swp]);
 			err |= clSetKernelArg(kernels[1], 21, sizeof(cl_mem), (void*) &cl_dSumSquareSimSwaptionPrice[cur_swp]);
-			err |= clSetKernelArg(kernels[1], 22, sizeof(cl_mem), (void*) &cl_iter_wi_sti);
-			err |= clSetKernelArg(kernels[1], 23, sizeof(cl_mem), (void*) &cl_iter_wi_edi);
+			err |= clSetKernelArg(kernels[1], 22, sizeof(cl_mem), (void*) &cl_iter_wi_sti[i]);
+			err |= clSetKernelArg(kernels[1], 23, sizeof(cl_mem), (void*) &cl_iter_wi_edi[i]);
 
 			if (err != CL_SUCCESS) {
 				printf("Error: failed to set kernel arguments. %d\n", err);
