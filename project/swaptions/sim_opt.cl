@@ -54,7 +54,6 @@ __kernel void swaption_sim(
 
 	// Optimization
 	FTYPE ppdHJMPath[1936];
-	// ----- 2-1 -----
 	FTYPE pdForward[11];
 	for (i = 0; i < iN; i++) {
 		pdForward[i] = x_pdForward[i];
@@ -67,23 +66,16 @@ __kernel void swaption_sim(
 	for (i = 0; i < iFactors * (iN-1); i++) {
 		ppdFactors[i] = x_ppdFactors[i];
 	}
-
-	FTYPE pdZ[30];
-	// ----- 2-3 -----
+	FTYPE pdZ[480];
 	FTYPE pdDiscountingRatePath[176];
 	FTYPE pdPayoffDiscountFactors[176];
 	FTYPE pdexpRes[160];
 	FTYPE pdSwapRatePath[144];
 	FTYPE pdSwapDiscountFactors[144];
 	FTYPE pdSwapPayoffs[9];
-
 	for (i = 0; i < iSwapVectorLength; i++) {
 		pdSwapPayoffs[i] = x_pdSwapPayoffs[i];
 	}
-	
-	// ----- 2-6 -----
-	//FTYPE pdZ[480]; 2-3
-	// ----- 2-2 -----
 
 	for (ii = iter_wi_sti[global_id]; ii <= iter_wi_edi[global_id]; ii++) {
 		
@@ -98,25 +90,19 @@ __kernel void swaption_sim(
 			}
 		}
 		
-		// Copy pdZ into private memory
 		x_pdZ = g_pdZ + iFactors * (iN-1) * BLOCKSIZE * ii;
 
-		for (b = 0; b < BLOCKSIZE; b++) {
-			// 
-			for (j = 1; j <= iN-1; j++) {
-				for (i = 0; i <= iFactors-1; i++) {
-					pdZ[iFactors*(j-1) + i] = x_pdZ[(iN-1)*iFactors*b + iFactors*(j-1) + i];
-				}
-			}
-			// ----- 2-4 -----
+		for (i = 0; i < iFactors * (iN-1) * BLOCKSIZE; i++) {
+			pdZ[i] = x_pdZ[i];
+		}
 
+		for (b = 0; b < BLOCKSIZE; b++) {
 			for (j = 1; j <= iN-1; j++) {
 				for (l = 0; l <= iN-(j+1); l++) {
 					dTotalShock = 0;
 
 					for (i = 0; i <= iFactors-1; i++) {
-						//dTotalShock += ppdFactors[(iN-1) * i + l] * pdZ[(iN-1)*iFactors*b + iFactors*(j-1) + i];
-						dTotalShock += ppdFactors[(iN-1) * i + l] * pdZ[iFactors*(j-1) + i];
+						dTotalShock += ppdFactors[(iN-1) * i + l] * pdZ[(iN-1)*iFactors*b + iFactors*(j-1) + i];
 					}
 
 					ppdHJMPath[iN * BLOCKSIZE * j + BLOCKSIZE * l + b] = ppdHJMPath[iN * BLOCKSIZE * (j-1) + BLOCKSIZE * (l+1) + b] + pdTotalDrift[l] * ddelt + sqrt_ddelt * dTotalShock;

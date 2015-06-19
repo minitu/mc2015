@@ -32,15 +32,26 @@ tbb::cache_aligned_allocator<parm> memory_parm;
 
 #if (defined(USE_CPU) || defined(USE_GPU)) || (defined(USE_MPI) || defined(USE_SNUCL))
 #include <CL/cl.h>
+
 #ifdef USE_SNUCL
 #include <CL/cl_ext_collective.h>
 #endif // SNUCL
+
 #ifdef USE_MPI
 #include "mpi.h"
 #endif // MPI
+
 #define MAX_SOURCE_SIZE 0x100000
 #define KCNT 2
 #define GLOBAL_WORK_SIZE 1024
+
+#ifdef USE_CPU
+#define LOCAL_WORK_SIZE1 16
+#define LOCAL_WORK_SIZE2 16
+#else
+#define LOCAL_WORK_SIZE1 64
+#define LOCAL_WORK_SIZE2 16
+#endif
 using namespace std;
 #endif // USE_CPU || USE_GPU || USE_MPI || USE_SNUCL
 
@@ -316,9 +327,11 @@ int main(int argc, char *argv[])
 	printf("\n[ Platform Information ]\n\n");
 
 	printf("%u platforms are detected.\n\n", plat_cnt);
-
+#endif
 	for (i = 0; i < plat_cnt; i++) {
+#ifdef DEBUG
 		printf("Platform #%d\n", i);
+#endif
 		for (j = 0; j < 4; j++) {
 			err = clGetPlatformInfo(platform_ids[i], attrTypes[j], 0, NULL, &info_size);
 			if (err != CL_SUCCESS) {
@@ -337,14 +350,15 @@ int main(int argc, char *argv[])
 				my_platform = platform_ids[i];
 			}
 #endif
-
+#ifdef DEBUG
 			printf("%s\n", platform_info);
-
+#endif
 			free(platform_info);
 		}
+#ifdef DEBUG
 		printf("\n");
-	}
 #endif
+	}
 
 	// Connect to compute devices
 	cl_uint dev_cnt;
@@ -702,6 +716,8 @@ int main(int argc, char *argv[])
 	cl_mem cl_sti[dev_cnt];
 	cl_mem cl_edi[dev_cnt];
 
+	size_t localWorkSize1 = LOCAL_WORK_SIZE1;
+
 	for (i = 0; i < dev_cnt; i++) {
 		cl_pdZ[i] = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(FTYPE) * ranCnt, NULL, &err);
 #ifdef USE_CPU
@@ -736,7 +752,7 @@ int main(int argc, char *argv[])
 		}
 
 		// Enqueue kernel
-		err = clEnqueueNDRangeKernel(commands[i], kernels[0], 1, NULL, &globalWorkSize, NULL, 0, NULL, NULL);
+		err = clEnqueueNDRangeKernel(commands[i], kernels[0], 1, NULL, &globalWorkSize, &localWorkSize1, 0, NULL, NULL);
 
 		if (err != CL_SUCCESS) {
 			printf("Error: failed to enqueue kernel. %d\n", err);
@@ -774,7 +790,7 @@ int main(int argc, char *argv[])
 
 	FTYPE *acc_dSumSimSwaptionPrice = (FTYPE*) calloc(GLOBAL_WORK_SIZE * nSwaptions, sizeof(FTYPE));
 	FTYPE *acc_dSumSquareSimSwaptionPrice = (FTYPE*) calloc(GLOBAL_WORK_SIZE * nSwaptions, sizeof(FTYPE));
-
+	
 	// Device memory objects
 	cl_mem cl_ppdHJMPath[nSwaptions];
 	cl_mem cl_pdDiscountingRatePath[nSwaptions];
@@ -836,30 +852,6 @@ int main(int argc, char *argv[])
 	for (i = 0; i < dev_cnt; i++) {
 		clFinish(commands[i]);
 	}
-/*
-	// Explicitly write and broadcast buffers
-	err = clEnqueueWriteBuffer(commands[0], cl_ppdFactors[0], CL_FALSE, 0, sizeof(FTYPE) * iFactors * (iN-1), gppdFactors, 0, NULL, NULL);
-	err |= clEnqueueWriteBuffer(commands[0], cl_gpdZ[0], CL_FALSE, 0, sizeof(FTYPE) * ranCnt, pdZ, 0, NULL, NULL);
-	err |= clEnqueueWriteBuffer(commands[0], cl_iter_wi_sti[0], CL_FALSE, 0, sizeof(unsigned int) * GLOBAL_WORK_SIZE, iter_wi_sti, 0, NULL, NULL);
-	err |= clEnqueueWriteBuffer(commands[0], cl_iter_wi_edi[0], CL_FALSE, 0, sizeof(unsigned int) * GLOBAL_WORK_SIZE, iter_wi_edi, 0, NULL, NULL);
-	
-	if (err != CL_SUCCESS) {
-		printf("Error: failed to write buffer. %d\n", err);
-		return EXIT_FAILURE;
-	}
-	
-	clFinish(commands[0]);
-
-	err = clEnqueueBroadcastBuffer(commands + 1, cl_ppdFactors[0], dev_cnt - 1, cl_ppdFactors + 1, 0, NULL, sizeof(FTYPE) * iFactors * (iN-1), 0, NULL, NULL);
-	err |= clEnqueueBroadcastBuffer(commands + 1, cl_gpdZ[0], dev_cnt - 1, cl_gpdZ + 1, 0, NULL, sizeof(FTYPE) * ranCnt, 0, NULL, NULL);
-	err |= clEnqueueBroadcastBuffer(commands + 1, cl_iter_wi_sti[0], dev_cnt - 1, cl_iter_wi_sti + 1, 0, NULL, sizeof(unsigned int) * GLOBAL_WORK_SIZE, 0, NULL, NULL);
-	err |= clEnqueueBroadcastBuffer(commands + 1, cl_iter_wi_edi[0], dev_cnt - 1, cl_iter_wi_edi + 1, 0, NULL, sizeof(unsigned int) * GLOBAL_WORK_SIZE, 0, NULL, NULL);
-
-	if (err != CL_SUCCESS) {
-		printf("Error: failed to broadcast buffer. %d\n", err);
-		return EXIT_FAILURE;
-	}
-	*/
 #endif
 
 	// Enqueue kernels for each swaption
@@ -870,6 +862,7 @@ int main(int argc, char *argv[])
 #else
 	int cur_swp = 0;
 #endif
+	size_t localWorkSize2 = LOCAL_WORK_SIZE2;
 
 	for (i = 0; i < dev_cnt; i++) {
 		for (swp_cnt = 0; swp_cnt < swp_dev[i]; swp_cnt++) {
@@ -952,7 +945,7 @@ int main(int argc, char *argv[])
 			}
 
 			// Enqueue kernel
-			err = clEnqueueNDRangeKernel(commands[i], kernels[1], 1, NULL, &globalWorkSize, NULL, 0, NULL, NULL);
+			err = clEnqueueNDRangeKernel(commands[i], kernels[1], 1, NULL, &globalWorkSize, &localWorkSize2, 0, NULL, NULL);
 
 			if (err != CL_SUCCESS) {
 				printf("Error: failed to enqueue kernel. %d\n", err);
